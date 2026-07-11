@@ -1,0 +1,3 @@
+# Public-source bridge uses only Python standard library.
+# Add the official IBKR Python API package after the IBKR PRO account is active:
+# ibapi>=9.81
