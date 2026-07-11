@@ -15,12 +15,20 @@ export async function GET(request: Request) {
   if (!RISK_PLANS[riskPlan]) return jsonError("Unsupported risk plan", 400);
   const markets = marketParam === "ALL" ? MARKETS : [marketParam as MarketCode];
   try {
-    const { snapshots, errors } = await scanPublicMarkets(markets, marketParam === "ALL" ? 2 : 10);
-    const ranked = rankSnapshots(snapshots, riskPlan, false).filter((item) => assetType === "ALL" || item.assetType === assetType);
+    const scanCount = marketParam === "ALL" ? 6 : 16;
+    const visiblePerMarket = marketParam === "ALL" ? 3 : 10;
+    const { snapshots, errors } = await scanPublicMarkets(markets, scanCount, assetType);
+    const perMarket = new Map<MarketCode, number>();
+    const ranked = rankSnapshots(snapshots, riskPlan, false).filter((item) => {
+      const count = perMarket.get(item.market) ?? 0;
+      if (count >= visiblePerMarket) return false;
+      perMarket.set(item.market, count + 1);
+      return true;
+    });
     let persistence = "available";
     try { await persistRankings(snapshots, ranked); } catch { persistence = "migration_pending"; }
     return Response.json({
-      rankings: ranked, meta: { mode: "SHADOW", primaryFeed: "public_sources", ibkrConnected: false, persistence, markets, errors: errors.slice(0, 8), generatedAt: new Date().toISOString() },
+      rankings: ranked, meta: { mode: "SHADOW", primaryFeed: "public_sources", discovery: "exchange_scoped", ibkrConnected: false, persistence, markets, errors: errors.slice(0, 8), generatedAt: new Date().toISOString() },
     }, { headers: { "Cache-Control": "private, max-age=120" } });
   } catch (error) { return jsonError("Market scan failed", 502, error); }
 }
