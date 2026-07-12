@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 try:
     import duckdb
 except ImportError as exc:  # explicit diagnostic instead of silently losing persistence
-    raise RuntimeError("Install bridge requirements: pip install -r bridge/requirements.txt") from exc
+    raise RuntimeError("Install bridge dependencies: pip install -r bridge/windows-bridge-dependencies.txt") from exc
 
 
 class MarketCache:
@@ -76,4 +76,3 @@ class MarketCache:
         with gzip.open(path, "wt", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
         return path
-

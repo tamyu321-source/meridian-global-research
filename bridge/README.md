@@ -17,7 +17,7 @@ Default coverage per run:
 Set the variables in `.env.example` in the Windows user environment, then run:
 
 ```powershell
-py -m pip install -r bridge\requirements.txt
+py -m pip install -r bridge\windows-bridge-dependencies.txt
 py bridge\meridian_bridge.py
 ```
 
