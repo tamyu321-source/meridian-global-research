@@ -12,10 +12,12 @@ import urllib.request
 from datetime import datetime, timezone
 
 try:
-    from .meridian_bridge import MARKETS, YahooClient, _snapshot, discover_universe, load_local_env
+    from .cache import MarketCache
+    from .meridian_bridge import MARKETS, YahooClient, _snapshot, discover_universe, enrich_candidate_profiles, load_local_env
     from .model_v2 import CONFIG_HASH, MODEL_VERSION, rank_snapshots
 except ImportError:
-    from meridian_bridge import MARKETS, YahooClient, _snapshot, discover_universe, load_local_env
+    from cache import MarketCache
+    from meridian_bridge import MARKETS, YahooClient, _snapshot, discover_universe, enrich_candidate_profiles, load_local_env
     from model_v2 import CONFIG_HASH, MODEL_VERSION, rank_snapshots
 
 MARKET_COSTS = {
@@ -75,16 +77,18 @@ def upload(endpoint, secret, token, result):
 
 def main():
     load_local_env(); parser = argparse.ArgumentParser(); parser.add_argument("--markets",default=",".join(MARKETS)); parser.add_argument("--stocks",type=int,default=30); parser.add_argument("--etfs",type=int,default=10); parser.add_argument("--output",default="backtest-result.json"); parser.add_argument("--endpoint",default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret",default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token",default=os.getenv("OAI_SITES_BYPASS_TOKEN", "")); args=parser.parse_args()
-    client = YahooClient(); result = {"modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"validationStatus":"PROVISIONAL_BACKTEST","survivorshipBias":True,"generatedAt":datetime.now(timezone.utc).isoformat(),"executionPolicy":"signal-close_next-open_stop-first","markets":{}}
+    client = YahooClient(); cache = MarketCache(); result = {"modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"validationStatus":"PROVISIONAL_BACKTEST","survivorshipBias":True,"generatedAt":datetime.now(timezone.utc).isoformat(),"executionPolicy":"signal-close_next-open_stop-first","markets":{}}
     all_trades=[]
     for market in [item for item in args.markets.split(",") if item in MARKETS]:
         candidates=discover_universe(client,market,args.stocks,args.etfs); snapshots=[]
         for candidate in candidates:
             try: snapshots.append(_snapshot(market,candidate,client.chart(candidate["symbol"])))
             except Exception: pass
+        enrich_candidate_profiles(client,cache,snapshots,workers=6)
         trades=walk_forward(snapshots,market); all_trades.extend(trades); result["markets"][market]={"metrics":_metrics(trades),"trades":trades}
     result["overall"]=_metrics(all_trades)
     with open(args.output,"w",encoding="utf-8") as handle: json.dump(result,handle,ensure_ascii=False,indent=2)
+    cache.close()
     if args.endpoint and args.secret: upload(args.endpoint,args.secret,args.sites_token,result)
     print(json.dumps({"output":args.output,"overall":result["overall"]},ensure_ascii=False))
 

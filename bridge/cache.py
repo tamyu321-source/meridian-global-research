@@ -4,6 +4,7 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 
 try:
@@ -32,6 +33,9 @@ class MarketCache:
             asset_type VARCHAR, name VARCHAR, sector VARCHAR, source VARCHAR,
             metadata_json VARCHAR, PRIMARY KEY(snapshot_date, instrument_id)
         )""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS security_profiles (
+            instrument_id VARCHAR PRIMARY KEY, profile_json VARCHAR, fetched_at TIMESTAMP
+        )""")
 
     def close(self):
         self.db.close()
@@ -51,6 +55,29 @@ class MarketCache:
         self.db.executemany("""INSERT INTO history VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(instrument_id,timestamp) DO UPDATE SET open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,adj_close=excluded.adj_close,volume=excluded.volume,dividend=excluded.dividend,split_ratio=excluded.split_ratio,source=excluded.source,fetched_at=excluded.fetched_at""", values)
 
+    def store_histories(self, snapshots):
+        """Bulk-load newline JSON in DuckDB; avoids millions of Python row calls."""
+        if not snapshots:
+            return
+        path = os.path.join(self.root, f"incoming-{uuid.uuid4().hex}.ndjson")
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                for snapshot in snapshots:
+                    captured = snapshot.get("capturedAt") or datetime.now(timezone.utc).isoformat()
+                    for bar in snapshot["bars"]:
+                        handle.write(json.dumps({"instrument_id":snapshot["instrumentId"],"symbol":snapshot["symbol"],"market":snapshot["market"],"asset_type":snapshot["assetType"],"timestamp":int(bar["timestamp"]),"open":float(bar["open"]),"high":float(bar["high"]),"low":float(bar["low"]),"close":float(bar["close"]),"adj_close":float(bar.get("adjClose") or bar["close"]),"volume":float(bar.get("volume") or 0),"dividend":float(bar.get("dividend") or 0),"split_ratio":float(bar.get("splitRatio") or 1),"source":snapshot.get("source","public"),"fetched_at":captured}, separators=(",", ":")) + "\n")
+            escaped = path.replace("'", "''")
+            self.db.execute("BEGIN TRANSACTION")
+            self.db.execute(f"""INSERT INTO history SELECT instrument_id,symbol,market,asset_type,timestamp,open,high,low,close,adj_close,volume,dividend,split_ratio,source,CAST(fetched_at AS TIMESTAMP) FROM read_json_auto('{escaped}', format='newline_delimited', sample_size=-1, union_by_name=true)
+                ON CONFLICT(instrument_id,timestamp) DO UPDATE SET open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,adj_close=excluded.adj_close,volume=excluded.volume,dividend=excluded.dividend,split_ratio=excluded.split_ratio,source=excluded.source,fetched_at=excluded.fetched_at""")
+            self.db.execute("COMMIT")
+        except Exception:
+            try: self.db.execute("ROLLBACK")
+            except Exception: pass
+            raise
+        finally:
+            if os.path.exists(path): os.remove(path)
+
     def store_universe(self, market, candidates, source, snapshot_date):
         values = []
         for item in candidates:
@@ -59,6 +86,14 @@ class MarketCache:
             values.append((snapshot_date, market, f"{market}:{symbol}", symbol, asset_type, item.get("shortName") or item.get("longName") or symbol, item.get("sector") or item.get("industry") or "Unclassified", source, json.dumps(item, ensure_ascii=False, separators=(",", ":"))))
         self.db.executemany("""INSERT INTO universe_snapshots VALUES (?,?,?,?,?,?,?,?,?)
             ON CONFLICT(snapshot_date,instrument_id) DO UPDATE SET asset_type=excluded.asset_type,name=excluded.name,sector=excluded.sector,source=excluded.source,metadata_json=excluded.metadata_json""", values)
+
+    def load_profile(self, instrument_id, max_age_days=7):
+        row = self.db.execute("SELECT profile_json FROM security_profiles WHERE instrument_id=? AND fetched_at > CURRENT_TIMESTAMP - (? * INTERVAL '1 day')", [instrument_id, max_age_days]).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def store_profile(self, instrument_id, profile):
+        self.db.execute("""INSERT INTO security_profiles VALUES (?,?,CURRENT_TIMESTAMP)
+            ON CONFLICT(instrument_id) DO UPDATE SET profile_json=excluded.profile_json,fetched_at=excluded.fetched_at""", [instrument_id, json.dumps(profile, ensure_ascii=False, separators=(",", ":"))])
 
     def export_market_parquet(self, market, scan_id):
         directory = os.path.join(self.parquet_root, f"market={market}")

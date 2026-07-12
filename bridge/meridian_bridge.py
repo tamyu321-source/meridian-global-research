@@ -32,13 +32,13 @@ except ImportError:
 
 MARKETS = ("US", "CN", "HK", "TW", "JP", "KR", "SG")
 MARKET = {
-    "US": {"currency":"USD","exchange":"NASDAQ/NYSE","codes":["NMS","NYQ","NGM","NCM","ASE"],"cap":2_000_000_000,"universe":"Nasdaq Trader directories + Yahoo fallback"},
-    "CN": {"currency":"CNY","exchange":"SSE/SZSE","codes":["SHH","SHZ"],"cap":5_000_000_000,"universe":"SSE/SZSE listings + Eastmoney/Yahoo fallback"},
-    "HK": {"currency":"HKD","exchange":"HKEX","codes":["HKG"],"cap":2_000_000_000,"universe":"HKEX listings + Eastmoney/Yahoo fallback"},
-    "TW": {"currency":"TWD","exchange":"TWSE/TPEX","codes":["TAI","TWO"],"cap":10_000_000_000,"universe":"TWSE/TPEX OpenAPI + Yahoo fallback"},
-    "JP": {"currency":"JPY","exchange":"TSE","codes":["JPX"],"cap":50_000_000_000,"universe":"JPX listed issues + Yahoo fallback"},
-    "KR": {"currency":"KRW","exchange":"KRX","codes":["KSC","KOE"],"cap":100_000_000_000,"universe":"KRX listed companies + Yahoo fallback"},
-    "SG": {"currency":"SGD","exchange":"SGX","codes":["SES"],"cap":500_000_000,"universe":"SGX securities + Yahoo fallback"},
+    "US": {"currency":"USD","exchange":"NASDAQ/NYSE","codes":["NMS","NYQ","NGM","NCM","ASE"],"cap":2_000_000_000,"universe":"Yahoo public exchange screener (Nasdaq/NYSE scoped)"},
+    "CN": {"currency":"CNY","exchange":"SSE/SZSE","codes":["SHH","SHZ"],"cap":5_000_000_000,"universe":"Yahoo public exchange screener (SSE/SZSE scoped)"},
+    "HK": {"currency":"HKD","exchange":"HKEX","codes":["HKG"],"cap":2_000_000_000,"universe":"Yahoo public exchange screener (HKEX scoped)"},
+    "TW": {"currency":"TWD","exchange":"TWSE/TPEX","codes":["TAI","TWO"],"cap":10_000_000_000,"universe":"Yahoo public exchange screener (TWSE/TPEX scoped)"},
+    "JP": {"currency":"JPY","exchange":"TSE","codes":["JPX"],"cap":50_000_000_000,"universe":"Yahoo public exchange screener (JPX scoped)"},
+    "KR": {"currency":"KRW","exchange":"KRX","codes":["KSC","KOE"],"cap":100_000_000_000,"universe":"Yahoo public exchange screener (KRX scoped)"},
+    "SG": {"currency":"SGD","exchange":"SGX","codes":["SES"],"cap":500_000_000,"universe":"Yahoo public exchange screener (SGX scoped)"},
 }
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MeridianResearchBridge/2.0"
 BLOCKED = re.compile(r"leveraged|inverse|ultra(?:pro|short)?|bear\s*[23]x|bull\s*[23]x|\b[23]x\b|warrant|callable\s+(?:bull|bear)|牛熊|權證|权证", re.I)
@@ -104,6 +104,12 @@ class YahooClient:
         else: params["range"] = "5y"
         return self.request("https://query1.finance.yahoo.com/v8/finance/chart/" + urllib.parse.quote(symbol) + "?" + urllib.parse.urlencode(params))
 
+    def quote_summary(self, symbol):
+        modules = "assetProfile,fundProfile,topHoldings,summaryDetail,defaultKeyStatistics"
+        url = "https://query2.finance.yahoo.com/v10/finance/quoteSummary/" + urllib.parse.quote(symbol) + "?modules=" + modules + "&crumb=" + urllib.parse.quote(self.session())
+        payload = self.request(url)
+        return (((payload.get("quoteSummary") or {}).get("result") or [{}])[0])
+
 
 def _symbol_matches(market, symbol, asset_type):
     symbol = str(symbol or "").upper()
@@ -147,6 +153,10 @@ def discover_universe(client, market, stocks, etfs):
     return discover_asset(client, market, "STOCK", stocks) + discover_asset(client, market, "ETF", etfs)
 
 
+def _candidate_liquidity(candidate):
+    return number(candidate.get("regularMarketPrice")) * (number(candidate.get("averageDailyVolume3Month")) or number(candidate.get("regularMarketVolume")))
+
+
 def _snapshot(market, candidate, payload):
     result = (((payload.get("chart") or {}).get("result") or [None])[0])
     if not result: raise ValueError("missing chart result")
@@ -161,7 +171,7 @@ def _snapshot(market, candidate, payload):
         dividend = number((dividends.get(str(stamp)) or {}).get("amount"))
         split = splits.get(str(stamp)) or {}; ratio = number(split.get("numerator"), 1) / max(number(split.get("denominator"), 1), .0001)
         bars.append({"timestamp":int(stamp), **values, "adjClose":number(adjusted[index], values["close"]) if index < len(adjusted) else values["close"], "dividend":dividend, "splitRatio":ratio})
-    if len(bars) < CONFIG["minimumTradingDays"]: raise ValueError("insufficient history")
+    if not bars: raise ValueError("empty history")
     meta = result.get("meta") or {}; symbol = candidate["symbol"]; price = number(meta.get("regularMarketPrice"), bars[-1]["close"]); previous = number(meta.get("chartPreviousClose"), bars[-2]["close"])
     asset_type = candidate["quoteType"]
     candidate_price = number(candidate.get("regularMarketPrice")); conflicts = []
@@ -177,26 +187,81 @@ def _snapshot(market, candidate, payload):
 
 
 def collect_history(client, cache, market, candidates, scan_id, workers=6):
-    snapshots, errors = [], []
+    snapshots, errors, failed_candidates = [], [], []
     def load(candidate):
         instrument_id = f"{market}:{candidate['symbol']}"; latest = cache.latest_timestamp(instrument_id)
         period1 = max(0, latest - 86400 * 7) if latest else None
-        payload = client.chart(candidate["symbol"], period1)
-        cache.save_raw(market, candidate["symbol"], payload, scan_id)
-        fresh = _snapshot(market, candidate, payload)
-        if latest:
-            prior = cache.load_history(instrument_id); by_stamp = {bar["timestamp"]:bar for bar in prior}
+        prior = cache.load_history(instrument_id) if latest else []
+        def cached_snapshot(warning):
+            asset_type = candidate["quoteType"]; symbol = candidate["symbol"]
+            return {"instrumentId":instrument_id,"symbol":symbol,"name":candidate.get("shortName") or candidate.get("longName") or symbol,"market":market,"exchange":candidate.get("fullExchangeName") or MARKET[market]["exchange"],"currency":candidate.get("currency") or MARKET[market]["currency"],"assetType":asset_type,"sector":candidate.get("sector") or candidate.get("industry") or "Unclassified","source":"DuckDB cached Yahoo adjusted OHLCV","sourceCount":1,"freshness":"delayed","capturedAt":datetime.fromtimestamp(latest,timezone.utc).isoformat(),"bars":prior,"price":prior[-1]["close"],"previousClose":prior[-2]["close"],"sourceWarnings":[warning],"sourceConflicts":[],"corporateActionAnomalies":[],"etfStructure":{"score":50,"missingNonCritical":asset_type == "ETF","excluded":False},"_cacheOnly":True}
+        if latest and len(prior) >= CONFIG["minimumTradingDays"] and time.time() - latest < 4 * 86400:
+            return cached_snapshot("LOCAL_INCREMENTAL_CACHE")
+        try:
+            payload = client.chart(candidate["symbol"], period1)
+            cache.save_raw(market, candidate["symbol"], payload, scan_id)
+            fresh = _snapshot(market, candidate, payload)
+        except Exception:
+            if len(prior) < CONFIG["minimumTradingDays"]: raise
+            fresh = cached_snapshot("DOWNLOAD_RETRY_USING_CACHE"); fresh["freshness"] = "fallback"
+        if latest and fresh["bars"] is not prior:
+            by_stamp = {bar["timestamp"]:bar for bar in prior}
             by_stamp.update({bar["timestamp"]:bar for bar in fresh["bars"]}); fresh["bars"] = [by_stamp[key] for key in sorted(by_stamp)]
+        if len(fresh["bars"]) < CONFIG["minimumTradingDays"]: raise ValueError("insufficient history")
         return fresh
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = {pool.submit(load, candidate):candidate for candidate in candidates}
         for future in as_completed(futures):
             candidate = futures[future]
             try:
-                item = future.result(); cache.store_history(item); snapshots.append(item)
+                item = future.result(); snapshots.append(item)
             except Exception as exc:
                 errors.append({"market":market,"symbol":candidate["symbol"],"stage":"history","error":type(exc).__name__})
+                failed_candidates.append(candidate)
+    # A calm second pass recovers transient provider throttles without weakening coverage.
+    recovered = set()
+    for candidate in failed_candidates:
+        try:
+            time.sleep(.12)
+            item = load(candidate); snapshots.append(item); recovered.add(candidate["symbol"])
+        except Exception:
+            pass
+    if recovered:
+        errors = [item for item in errors if item.get("symbol") not in recovered]
     return snapshots, errors
+
+
+def _raw_value(value, default=0):
+    return number(value.get("raw"), default) if isinstance(value, dict) else number(value, default)
+
+
+def enrich_candidate_profiles(client, cache, snapshots, workers=8):
+    preliminary = rank_snapshots(snapshots, allow_buy=False)
+    selected = []
+    for market in MARKETS:
+        for asset_type, limit in (("STOCK", 60), ("ETF", 30)):
+            selected.extend([item for item in preliminary if item["market"] == market and item["assetType"] == asset_type][:limit])
+    snapshot_by_id = {item["instrumentId"]:item for item in snapshots}
+    def fetch(item):
+        cached = cache.load_profile(item["instrumentId"])
+        return item, cached or client.quote_summary(item["symbol"]), cached is None
+    with ThreadPoolExecutor(max_workers=max(1,workers)) as pool:
+        futures = [pool.submit(fetch,item) for item in selected]
+        for future in as_completed(futures):
+            try:
+                rank, profile, is_new = future.result(); snapshot = snapshot_by_id[rank["instrumentId"]]
+                if is_new: cache.store_profile(rank["instrumentId"], profile)
+                if snapshot["assetType"] == "STOCK":
+                    asset = profile.get("assetProfile") or {}; snapshot["sector"] = asset.get("sector") or asset.get("sectorDisp") or snapshot.get("sector"); snapshot["industry"] = asset.get("industry") or asset.get("industryDisp")
+                else:
+                    fund = profile.get("fundProfile") or {}; stats = profile.get("defaultKeyStatistics") or {}; holdings = profile.get("topHoldings") or {}
+                    category = fund.get("categoryName") or stats.get("category"); assets = _raw_value(stats.get("totalAssets")); top = holdings.get("holdings") or []
+                    concentration = sum(_raw_value(item.get("holdingPercent")) for item in top[:10]) * 100
+                    structure_score = 50 + (10 if category else 0) + (10 if assets >= 100_000_000 else 0) + (5 if concentration and concentration <= 60 else -5 if concentration > 80 else 0)
+                    snapshot["sector"] = category or "ETF"; snapshot["etfStructure"] = {"score":max(0,min(100,structure_score)),"trackingCategory":category or "Unknown","assets":assets,"concentration":round(concentration,2) if concentration else None,"premiumDiscount":None,"missingNonCritical":not bool(category and assets),"excluded":False}
+            except Exception:
+                pass
+    return snapshots
 
 
 def _chunks(items, size):
@@ -232,17 +297,27 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
     client, cache = YahooClient(), MarketCache(); all_snapshots, errors, coverage, parquet = [], [], {}, {}
     try:
         for market in markets:
-            market_started = time.time(); candidates = discover_universe(client, market, stock_target, etf_target)
+            market_started = time.time()
+            # Filter history eligibility before choosing the final 500+100 pool.
+            candidates = discover_universe(client, market, max(stock_target, math.ceil(stock_target * 1.25)), max(etf_target, math.ceil(etf_target * 1.4)))
             cache.store_universe(market, candidates, MARKET[market]["universe"], today)
-            snapshots, market_errors = collect_history(client, cache, market, candidates, scan_id, workers)
+            eligible, market_errors = collect_history(client, cache, market, candidates, scan_id, workers)
+            liquidity = {item["symbol"]:_candidate_liquidity(item) for item in candidates}
+            eligible_stocks = sorted((item for item in eligible if item["assetType"] == "STOCK"), key=lambda item:liquidity.get(item["symbol"],0), reverse=True)
+            eligible_etfs = sorted((item for item in eligible if item["assetType"] == "ETF"), key=lambda item:liquidity.get(item["symbol"],0), reverse=True)
+            desired_stocks, desired_etfs = min(stock_target, len(eligible_stocks)), min(etf_target, len(eligible_etfs))
+            stocks, etfs = eligible_stocks[:desired_stocks], eligible_etfs[:desired_etfs]
+            snapshots = stocks + etfs
+            cache.store_histories([item for item in eligible if not item.get("_cacheOnly")])
             all_snapshots.extend(snapshots); errors.extend(market_errors)
-            discovered = len(candidates); analyzed = len(snapshots); ratio = analyzed / discovered * 100 if discovered else 0
-            coverage[market] = {"stocksDiscovered":sum(x["quoteType"] == "STOCK" for x in candidates),"etfsDiscovered":sum(x["quoteType"] == "ETF" for x in candidates),"stocksAnalyzed":sum(x["assetType"] == "STOCK" for x in snapshots),"etfsAnalyzed":sum(x["assetType"] == "ETF" for x in snapshots),"failed":len(market_errors),"coveragePct":round(ratio,2),"qualityGatePassed":ratio >= CONFIG["completionCoveragePct"],"universeSource":MARKET[market]["universe"],"seconds":round(time.time()-market_started,1)}
+            discovered_count = desired_stocks + desired_etfs; analyzed = len(snapshots); ratio = analyzed / discovered_count * 100 if discovered_count else 0
+            coverage[market] = {"stocksDiscovered":desired_stocks,"etfsDiscovered":desired_etfs,"targetStocks":stock_target,"targetEtfs":etf_target,"rawStocksDiscovered":sum(x["quoteType"] == "STOCK" for x in candidates),"rawEtfsDiscovered":sum(x["quoteType"] == "ETF" for x in candidates),"stocksAnalyzed":len(stocks),"etfsAnalyzed":len(etfs),"historyRejected":len(candidates)-len(eligible),"failed":len(market_errors),"coveragePct":round(ratio,2),"qualityGatePassed":discovered_count > 0 and ratio >= CONFIG["completionCoveragePct"],"universeSource":MARKET[market]["universe"],"seconds":round(time.time()-market_started,1)}
             parquet[market] = cache.export_market_parquet(market, scan_id)
             print(json.dumps({"market":market,"coverage":coverage[market]}, ensure_ascii=False), flush=True)
+        enrich_candidate_profiles(client, cache, all_snapshots)
         rankings = rank_snapshots(all_snapshots, allow_buy=True); completed = datetime.now(timezone.utc)
         source_conflicts = sum(len(item.get("sourceConflicts") or []) for item in all_snapshots); action_anomalies = sum(len(item.get("corporateActionAnomalies") or []) for item in all_snapshots)
-        complete = all(coverage.get(market, {}).get("qualityGatePassed") for market in markets) and action_anomalies == 0
+        complete = set(markets) == set(MARKETS) and all(coverage.get(market, {}).get("qualityGatePassed") for market in MARKETS) and action_anomalies == 0
         status = "complete" if complete else "partial"
         scan = {"id":scan_id,"provider":"Public exchange directories + Yahoo Finance adjusted OHLCV","modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"validationStatus":"SHADOW","status":status,"startedAt":started.isoformat(),"completedAt":completed.isoformat(),"requestedMarkets":markets,"targetStocksPerMarket":stock_target,"targetEtfsPerMarket":etf_target,"discoveredCount":sum(v["stocksDiscovered"]+v["etfsDiscovered"] for v in coverage.values()),"analyzedCount":len(rankings),"failedCount":len(errors),"fallbackCount":0,"coverage":coverage,"sourceConflicts":source_conflicts,"corporateActionAnomalies":action_anomalies,"qualityGatePassed":complete,"universeSnapshotDate":today}
         batches = upload_rankings(endpoint, secret, sites_token, scan, rankings)
@@ -255,7 +330,7 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
 
 def main():
     load_local_env(); parser = argparse.ArgumentParser(description="Meridian v2 comprehensive public market bridge")
-    parser.add_argument("--endpoint", default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret", default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token", default=os.getenv("OAI_SITES_BYPASS_TOKEN", "")); parser.add_argument("--markets", default=",".join(MARKETS)); parser.add_argument("--stocks", type=int, default=int(os.getenv("MERIDIAN_STOCKS_PER_MARKET", "500"))); parser.add_argument("--etfs", type=int, default=int(os.getenv("MERIDIAN_ETFS_PER_MARKET", "100"))); parser.add_argument("--workers", type=int, default=int(os.getenv("MERIDIAN_HISTORY_WORKERS", "6"))); parser.add_argument("--loop", action="store_true"); args = parser.parse_args()
+    parser.add_argument("--endpoint", default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret", default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token", default=os.getenv("OAI_SITES_BYPASS_TOKEN", "")); parser.add_argument("--markets", default=",".join(MARKETS)); parser.add_argument("--stocks", type=int, default=int(os.getenv("MERIDIAN_STOCKS_PER_MARKET", "500"))); parser.add_argument("--etfs", type=int, default=int(os.getenv("MERIDIAN_ETFS_PER_MARKET", "100"))); parser.add_argument("--workers", type=int, default=int(os.getenv("MERIDIAN_HISTORY_WORKERS", "12"))); parser.add_argument("--loop", action="store_true"); args = parser.parse_args()
     if not args.endpoint or not args.secret: parser.error("--endpoint and --secret are required")
     markets = [item.strip().upper() for item in args.markets.split(",") if item.strip().upper() in MARKETS]
     while True:
