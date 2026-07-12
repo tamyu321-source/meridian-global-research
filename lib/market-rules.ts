@@ -46,6 +46,13 @@ export function validatePositionQuantity(market: MarketCode, side:"BUY"|"SELL", 
   return null;
 }
 
+export function qualifiesForMinimumLotException(market:MarketCode, assetType:AssetType, side:"BUY"|"SELL", quantity:number, heldQuantity:number) {
+  if (side !== "BUY") return false;
+  const supported = market === "CN" || (market === "JP" && assetType === "STOCK");
+  const lot = assetType === "ETF" ? MARKET_RULES[market].etfLot : MARKET_RULES[market].stockLot;
+  return Boolean(supported && lot && quantity === lot && heldQuantity < lot);
+}
+
 export function estimateMarketCosts(market: MarketCode, assetType: AssetType, side: "BUY" | "SELL", grossLocal: number, quantity: number) {
   const rule = MARKET_RULES[market];
   const commission = Math.max(rule.commissionMinimum, market === "US" ? quantity * .0035 : grossLocal * rule.commissionRate);
@@ -67,5 +74,5 @@ export function marketSessionState(market: MarketCode, now = new Date()) {
 }
 
 export function marketRulesForClient() {
-  return Object.values(MARKET_RULES).map((rule) => ({ market:rule.market, settlement:rule.settlement, stockLot:rule.stockLot, etfLot:rule.etfLot, oddLotAllowed:rule.oddLotAllowed, priceLimitPct:rule.priceLimitPct, notes:rule.notes, session:marketSessionState(rule.market) }));
+  return Object.values(MARKET_RULES).map((rule) => ({ market:rule.market, settlement:rule.settlement, stockLot:rule.stockLot, etfLot:rule.etfLot, oddLotAllowed:rule.oddLotAllowed, priceLimitPct:rule.priceLimitPct, ruleVersion:MARKET_RULE_VERSION, session:marketSessionState(rule.market) }));
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { estimateMarketCosts, marketSessionState, MARKET_RULE_VERSION, validateMarketQuantity, validatePositionQuantity } from "../lib/market-rules";
+import { estimateMarketCosts, marketSessionState, MARKET_RULE_VERSION, qualifiesForMinimumLotException, validateMarketQuantity, validatePositionQuantity } from "../lib/market-rules";
 
 test("China A-share buys require board lots while sells allow residual quantities", () => {
   assert.match(validateMarketQuantity("CN", "STOCK", "BUY", 99) ?? "", /multiple of 100/);
@@ -14,6 +14,17 @@ test("Japan stocks and ETFs keep separate quantity rules", () => {
   assert.match(validateMarketQuantity("JP", "STOCK", "BUY", 1) ?? "", /multiple of 100/);
   assert.equal(validateMarketQuantity("JP", "STOCK", "BUY", 100), null);
   assert.equal(validateMarketQuantity("JP", "ETF", "BUY", 1), null);
+});
+
+test("small portfolios may use one minimum board-lot exception", () => {
+  assert.equal(qualifiesForMinimumLotException("CN","STOCK","BUY",100,0), true);
+  assert.equal(qualifiesForMinimumLotException("CN","STOCK","BUY",100,1), true);
+  assert.equal(qualifiesForMinimumLotException("CN","STOCK","BUY",200,0), false);
+  assert.equal(qualifiesForMinimumLotException("JP","STOCK","BUY",100,0), true);
+  assert.equal(qualifiesForMinimumLotException("TW","STOCK","BUY",1_000,0), false);
+  const aggressiveMarketLimit = 5_000 * .6;
+  assert.equal(20 * 100 <= aggressiveMarketLimit, true);
+  assert.equal(35 * 100 <= aggressiveMarketLimit, false);
 });
 
 test("Taiwan applies the lower ETF sell tax and records the rule version", () => {
