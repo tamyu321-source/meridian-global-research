@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Locale, RankedSecurity, RiskPlanId } from "@/lib/types";
 import { MARKETS, MODEL_VERSION, RISK_PLANS } from "@/lib/types";
@@ -32,6 +33,8 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
   const [quantity, setQuantity] = useState(1);
   const t = words[locale];
 
+  // Locale preference can only be read after the client has hydrated.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { const stored = localStorage.getItem("meridian.locale") as Locale | null; if (stored && words[stored]) setLocale(stored); }, []);
   useEffect(() => { localStorage.setItem("meridian.locale", locale); document.documentElement.lang = locale; }, [locale]);
 
@@ -46,9 +49,12 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
     finally { setLoading(false); }
   }, [market, assetType, riskPlan]);
 
+  // The current filters drive a server refresh rather than derived local state.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (["dashboard", "scanner", "signals"].includes(view)) void loadRankings(); }, [view, loadRankings]);
   useEffect(() => {
     if (view !== "security" || !instrumentId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     fetch(`/api/securities/${encodeURIComponent(instrumentId)}?riskPlan=${riskPlan}`, { cache: "no-store" }).then(async (response) => {
       const result = await response.json() as { security?: RankedSecurity; error?: string };
@@ -70,13 +76,13 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
   return (
     <div className="app-shell">
       <header className="app-header">
-        <a className="brand" href="/"><span className="brand-mark">M</span><span>MERIDIAN</span></a>
+        <Link className="brand" href="/"><span className="brand-mark">M</span><span>MERIDIAN</span></Link>
         <div className="header-status"><span className="status-dot" />{t.shadow}<b>{t.public}</b></div>
         <select aria-label="Language" value={locale} onChange={(event) => setLocale(event.target.value as Locale)}><option value="zh-TW">繁體中文</option><option value="zh-CN">简体中文</option><option value="en">English</option><option value="ja">日本語</option><option value="ko">한국어</option></select>
       </header>
       <aside className="side-nav" aria-label="Main navigation">
         <div className="side-caption">RESEARCH DESK</div>
-        {t.nav.map((label, index) => <a key={label} className={(view === ["dashboard","scanner","signals","portfolio","backtests","health","settings"][index]) ? "active" : ""} href={navHref[index]}><span>{String(index + 1).padStart(2,"0")}</span>{label}</a>)}
+        {t.nav.map((label, index) => <Link key={label} className={(view === ["dashboard","scanner","signals","portfolio","backtests","health","settings"][index]) ? "active" : ""} href={navHref[index]}><span>{String(index + 1).padStart(2,"0")}</span>{label}</Link>)}
         <div className="model-stamp"><span>MODEL</span><strong>{MODEL_VERSION}</strong><small>2–12 WEEK SWING</small></div>
       </aside>
       <main className="workspace">
@@ -113,7 +119,7 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
         {view === "health" && <HealthView locale={locale} title={t.health} ibkr={t.ibkr}/>} 
         {view === "settings" && <SettingsView locale={locale} title={t.settings} saveLabel={t.save} notifyLabel={t.notify}/>} 
       </main>
-      <footer className="app-footer"><span>© 2026 MERIDIAN RESEARCH</span><p>{t.disclaimer}</p><a href="/health">DATA STATUS →</a></footer>
+      <footer className="app-footer"><span>© 2026 MERIDIAN RESEARCH</span><p>{t.disclaimer}</p><Link href="/health">DATA STATUS →</Link></footer>
     </div>
   );
 }
@@ -133,9 +139,16 @@ function SecurityPanel({ security, locale, t, quantity, setQuantity, onPaperBuy,
 }
 
 function PortfolioView({ locale, title, setup }: { locale:Locale; title:string; setup:string }) {
-  const [data,setData]=useState<{portfolio?:Record<string,unknown>;positions?:Array<Record<string,unknown>>;orders?:Array<Record<string,unknown>>}|null>(null);
-  useEffect(()=>{fetch("/api/paper/orders",{cache:"no-store"}).then(async r=>await r.json() as {portfolio?:Record<string,unknown>;positions?:Array<Record<string,unknown>>;orders?:Array<Record<string,unknown>>}).then(setData).catch(()=>setData({}));},[]);
-  return <PageSection title={title} eyebrow="PAPER / PORTFOLIO">{!data?<div className="state-card">Loading…</div>:!data.portfolio?<div className="empty-state large"><h2>{setup}</h2><a className="scan-button" href="/settings">SETUP →</a></div>:<><section className="metric-grid"><Metric label="CASH" value={`${data.portfolio.base_currency} ${Number(data.portfolio.cash).toLocaleString(locale)}`}/><Metric label="STARTING CAPITAL" value={Number(data.portfolio.starting_capital).toLocaleString(locale)}/><Metric label="POSITIONS" value={data.positions?.length??0}/><Metric label="RISK PLAN" value={String(data.portfolio.risk_plan)}/></section><DataTable rows={data.positions??[]}/><DataTable rows={data.orders??[]}/></>}</PageSection>;
+  type PortfolioPayload={portfolio?:Record<string,unknown>|null;positions?:Array<Record<string,unknown>>;orders?:Array<Record<string,unknown>>;summary?:Record<string,unknown>|null;marketRules?:Array<Record<string,unknown>>};
+  const labels={"zh-TW":{equity:"淨值",cash:"現金",pnl:"未實現損益",drawdown:"回撤",positions:"持倉",available:"可賣",value:"基準幣值",sell:"模擬賣出",history:"訂單紀錄",rules:"市場規則",fee:"費用、稅與匯率會在伺服器重新計算"},"zh-CN":{equity:"净值",cash:"现金",pnl:"未实现损益",drawdown:"回撤",positions:"持仓",available:"可卖",value:"基准币值",sell:"模拟卖出",history:"订单记录",rules:"市场规则",fee:"费用、税费与汇率会在服务器重新计算"},en:{equity:"Equity",cash:"Cash",pnl:"Unrealized P&L",drawdown:"Drawdown",positions:"Positions",available:"Sellable",value:"Base value",sell:"Paper sell",history:"Order history",rules:"Market rules",fee:"Fees, taxes and FX are revalidated server-side"},ja:{equity:"純資産",cash:"現金",pnl:"含み損益",drawdown:"ドローダウン",positions:"保有銘柄",available:"売却可能",value:"基準通貨価値",sell:"模擬売却",history:"注文履歴",rules:"市場ルール",fee:"手数料・税・為替はサーバーで再計算"},ko:{equity:"순자산",cash:"현금",pnl:"미실현 손익",drawdown:"낙폭",positions:"보유",available:"매도 가능",value:"기준 통화 가치",sell:"모의 매도",history:"주문 기록",rules:"시장 규칙",fee:"수수료, 세금 및 환율은 서버에서 재검증"}}[locale];
+  const [data,setData]=useState<PortfolioPayload|null>(null),[sellQty,setSellQty]=useState<Record<string,number>>({}),[message,setMessage]=useState("");
+  const load=useCallback(async()=>{try{const response=await fetch("/api/paper/orders",{cache:"no-store"});const next=await response.json() as PortfolioPayload & {error?:string};if(!response.ok)throw new Error(next.error??"portfolio_failed");setData(next);setSellQty(Object.fromEntries((next.positions??[]).map(row=>[String(row.instrument_id),Number(row.sellable_quantity??1)])));}catch(caught){setMessage(caught instanceof Error?caught.message:"portfolio_failed");setData({});}},[]);
+  // Initial portfolio hydration must synchronize the client with the owner-only API.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(()=>{void load();},[load]);
+  async function sell(row:Record<string,unknown>){const instrumentId=String(row.instrument_id),quantity=Number(sellQty[instrumentId]??0);setMessage("");const response=await fetch("/api/paper/orders",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({instrumentId,side:"SELL",quantity})});const result=await response.json() as {error?:string;order?:{realizedPnlBase?:number;baseCurrency?:string}};if(!response.ok){setMessage(result.error??"sell_failed");return;}setMessage(`${labels.sell}: ${result.order?.baseCurrency??""} ${Number(result.order?.realizedPnlBase??0).toLocaleString(locale)}`);await load();}
+  const summary=data?.summary??{},positions=data?.positions??[],base=String(summary.baseCurrency??data?.portfolio?.base_currency??"");
+  return <PageSection title={title} eyebrow="PAPER / PORTFOLIO">{!data?<div className="state-card">Loading…</div>:!data.portfolio?<div className="empty-state large"><h2>{setup}</h2><Link className="scan-button" href="/settings">SETUP →</Link></div>:<><section className="metric-grid"><Metric label={labels.equity} value={`${base} ${Number(summary.equity??0).toLocaleString(locale)}`}/><Metric label={labels.cash} value={`${base} ${Number(summary.cash??0).toLocaleString(locale)}`}/><Metric label={labels.pnl} value={`${base} ${Number(summary.unrealizedPnl??0).toLocaleString(locale)}`} tone={Number(summary.unrealizedPnl??0)<0?"red":"green"}/><Metric label={labels.drawdown} value={`${Number(summary.drawdownPct??0).toFixed(2)}%`} tone={Number(summary.drawdownPct??0)>0?"red":undefined}/></section><div className="portfolio-note"><strong>{labels.positions}: {positions.length}</strong><span>{labels.fee}</span><b>{message}</b></div>{positions.length?<div className="data-table portfolio-table"><table><thead><tr><th>Symbol</th><th>Market</th><th>Qty / {labels.available}</th><th>Avg / Price</th><th>{labels.value}</th><th>P&amp;L</th><th>{labels.sell}</th></tr></thead><tbody>{positions.map(row=>{const id=String(row.instrument_id),sellable=Number(row.sellable_quantity??0);return <tr key={id}><td><strong>{String(row.symbol)}</strong><small>{String(row.name)}</small></td><td>{String(row.market)}<small>{String(row.currency)}</small></td><td>{Number(row.quantity).toLocaleString(locale)}<small>{sellable.toLocaleString(locale)}</small></td><td>{Number(row.average_cost).toLocaleString(locale)}<small>{Number(row.price).toLocaleString(locale)}</small></td><td>{base} {Number(row.base_market_value).toLocaleString(locale)}</td><td className={Number(row.unrealized_pnl_base)>=0?"positive":"negative"}>{Number(row.unrealized_pnl_base).toLocaleString(locale)}</td><td><div className="sell-control"><input aria-label={`${labels.sell} ${String(row.symbol)}`} type="number" min="1" max={sellable} step="1" value={sellQty[id]??sellable} onChange={event=>setSellQty({...sellQty,[id]:Math.max(1,Number(event.target.value))})}/><button disabled={sellable<=0} onClick={()=>void sell(row)}>{labels.sell}</button></div></td></tr>})}</tbody></table></div>:<div className="empty-state">{labels.positions}: 0</div>}<h3 className="section-label">{labels.rules}</h3><div className="market-rule-grid">{(data.marketRules??[]).map(rule=><div key={String(rule.market)}><strong>{String(rule.market)}</strong><span>{String(rule.settlement)} · LOT {String(rule.stockLot??"VARIABLE")}</span><small>{String((rule.session as Record<string,unknown>)?.state??"")}</small></div>)}</div><h3 className="section-label">{labels.history}</h3><DataTable rows={data.orders??[]}/></>}</PageSection>;
 }
 
 function BacktestView({ locale, title }: { locale:Locale; title:string }) {

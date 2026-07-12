@@ -63,6 +63,8 @@ export const paperOrders = sqliteTable("paper_orders", {
   id: text("id").primaryKey(), portfolioId: text("portfolio_id").notNull().references(() => paperPortfolios.id), userEmail: text("user_email").notNull(),
   instrumentId: text("instrument_id").notNull().references(() => securities.instrumentId), side: text("side").notNull(), quantity: real("quantity").notNull(),
   requestedPrice: real("requested_price").notNull(), filledPrice: real("filled_price"), status: text("status").notNull(),
+  currency: text("currency"), grossValue: real("gross_value"), commission: real("commission"), taxes: real("taxes"), fxRate: real("fx_rate"),
+  netCashFlow: real("net_cash_flow"), realizedPnlBase: real("realized_pnl_base"), marketRuleVersion: text("market_rule_version"), marketSession: text("market_session"),
   signalId: text("signal_id"), rejectionReason: text("rejection_reason"), createdAt: timestamp("created_at"),
 }, (table) => [index("paper_orders_user_idx").on(table.userEmail, table.createdAt)]);
 
