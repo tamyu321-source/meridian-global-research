@@ -12,6 +12,7 @@ test("risk-plan limits and names are localized", () => {
 test("paper-order risk errors use localized parameters", () => {
   assert.equal(apiErrorText("zh-CN",{errorCode:"POSITION_LIMIT",errorParams:{max:12,plan:"growth"}}), "该订单会超过“积极成长”计划 12% 的单只证券上限。");
   assert.equal(apiErrorText("en",{errorCode:"DRAWDOWN_BREAKER",errorParams:{max:20}}), "Portfolio drawdown reached the 20% breaker; new buys are paused.");
+  assert.equal(apiErrorText("zh-CN",{errorCode:"CAPITAL_REDUCTION_BLOCKED",errorParams:{minimum:4_000}}), "当前仍有持仓，模拟本金不能低于 4000；请先卖出部分持仓。");
 });
 
 test("algorithm and health codes no longer leak English UI labels", () => {
