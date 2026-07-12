@@ -20,7 +20,7 @@ export async function POST(request: Request) {
     const item = payload.markets[market];
     if (!item?.metrics) continue;
     const metrics = item.metrics;
-    const passed = Number(metrics.tradeCount ?? 0) >= 40 && Number(metrics.profitFactor ?? 0) >= 1.2 && Number(metrics.sharpe ?? 0) >= .8 && Number(metrics.expectancyPct ?? 0) > 0;
+    const passed = Number(metrics.tradeCount ?? 0) >= 40 && Number(metrics.profitFactor ?? 0) >= 1.2 && Number(metrics.sharpe ?? 0) >= .8 && Number(metrics.expectancyPct ?? 0) > 0 && Math.abs(Number(metrics.maxDrawdownPct ?? 100)) <= 10;
     statements.push(runtime.DB.prepare("INSERT INTO backtest_runs (id,model_version,market,risk_plan,status,started_at,completed_at,metrics_json,artifact_key,created_at) VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)")
       .bind(crypto.randomUUID(), payload.modelVersion, market, "capital_first", passed ? "PROVISIONAL_PASSED" : "PROVISIONAL_FAILED_GATE", payload.generatedAt, new Date().toISOString(), JSON.stringify({ ...metrics, validationStatus:"PROVISIONAL_BACKTEST", survivorshipBias:true, formalEligible:false }), runtime.MARKET_ARCHIVE ? artifactKey : null));
   }

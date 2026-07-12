@@ -28,12 +28,13 @@ MARKET_COSTS = {
 }
 
 
-def _metrics(trades):
+def _metrics(trades, position_weight=.05):
     returns = [item["returnPct"] / 100 for item in trades]; wins = [value for value in returns if value > 0]; losses = [value for value in returns if value < 0]
     equity = peak = 1.0; drawdown = 0.0
-    for value in returns: equity *= 1 + value; peak = max(peak, equity); drawdown = min(drawdown, equity / peak - 1)
+    # Capital-first portfolio path: each completed trade contributes at most 5%.
+    for value in returns: equity *= 1 + value * position_weight; peak = max(peak, equity); drawdown = min(drawdown, equity / peak - 1)
     average = statistics.fmean(returns) if returns else 0; deviation = statistics.stdev(returns) if len(returns) > 1 else 0
-    return {"tradeCount":len(trades),"expectancyPct":round(average*100,3),"profitFactor":round(sum(wins)/abs(sum(losses)),3) if losses else None,"sharpe":round(average/deviation*math.sqrt(252/30),3) if deviation else 0,"maxDrawdownPct":round(drawdown*100,3),"netReturnPct":round((equity-1)*100,3)}
+    return {"tradeCount":len(trades),"expectancyPct":round(average*100,3),"profitFactor":round(sum(wins)/abs(sum(losses)),3) if losses else None,"sharpe":round(average/deviation*math.sqrt(252/30),3) if deviation else 0,"maxDrawdownPct":round(drawdown*100,3),"netReturnPct":round((equity-1)*100,3),"positionWeightPct":round(position_weight*100,2)}
 
 
 def walk_forward(snapshots, market):
