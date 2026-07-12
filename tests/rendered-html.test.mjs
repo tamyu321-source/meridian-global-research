@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("production shell and metadata replace the demo", async () => {
+test("production shell exposes v2 shadow and provisional-data truth", async () => {
   const [page, layout, app, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -12,7 +12,9 @@ test("production shell and metadata replace the demo", async () => {
   assert.match(page, /MeridianApp view="dashboard"/);
   assert.match(layout, /Auditable Global Investment Research/);
   assert.match(layout, /openGraph/);
-  assert.match(app, /影子訊號/);
+  assert.match(app, /影子 BUY/);
+  assert.match(app, /暫定回測/);
+  assert.match(app, /允許沒有 BUY/);
   assert.match(app, /跨市場投資研究/);
   assert.match(css, /prefers-reduced-motion/);
   assert.doesNotMatch(`${page}${layout}${app}`, /Your site is taking shape|codex-preview|Demo data/i);

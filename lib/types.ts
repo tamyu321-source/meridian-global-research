@@ -5,6 +5,8 @@ export type DataFreshness = "realtime" | "delayed" | "fallback" | "stale";
 export type SignalStatus = "SHADOW" | "FORMAL";
 export type SignalAction = "BUY" | "WATCH" | "HOLD" | "REDUCE" | "EXIT";
 export type RiskPlanId = "capital_first" | "balanced" | "growth";
+export type AssetModel = "STOCK_V2" | "ETF_V2" | "LEGACY_V1";
+export type ValidationStatus = "SHADOW" | "PROVISIONAL_BACKTEST" | "FORMAL";
 
 export type PriceBar = {
   timestamp: number;
@@ -13,6 +15,9 @@ export type PriceBar = {
   low: number;
   close: number;
   volume: number;
+  adjClose?: number;
+  dividend?: number;
+  splitRatio?: number;
 };
 
 export type MarketSnapshot = {
@@ -40,6 +45,16 @@ export type FactorScores = {
   liquidity: number;
   risk: number;
   regime: number;
+  structure?: number;
+};
+
+export type DataQuality = {
+  completenessPct: number;
+  sourceCount: number;
+  warnings: unknown[];
+  conflicts: unknown[];
+  corporateActionAnomalies: unknown[];
+  hardGates: string[];
 };
 
 export type TradePlan = {
@@ -78,6 +93,11 @@ export type RankedSecurity = {
   reasonCodes: string[];
   hardGates: string[];
   modelVersion: string;
+  assetModel: AssetModel;
+  validationStatus: ValidationStatus;
+  configHash: string;
+  dataQuality: DataQuality;
+  selection: { eligibleBeforeCap: boolean; bucketRank: number; buyLimit: number; capped: boolean };
 };
 
 export const MARKETS: MarketCode[] = ["US", "CN", "HK", "TW", "JP", "KR", "SG"];
@@ -95,4 +115,5 @@ export const RISK_PLANS: Record<RiskPlanId, {
   growth: { id: "growth", riskBudgetPct: 1.5, maxWeightPct: 12, maxSectorPct: 40, maxMarketPct: 60, drawdownBreakerPct: 20 },
 };
 
-export const MODEL_VERSION = "meridian-swing-v1.0.0";
+export const MODEL_VERSION = "meridian-swing-v2.0.0";
+export const LEGACY_MODEL_VERSION = "meridian-swing-v1.0.0";

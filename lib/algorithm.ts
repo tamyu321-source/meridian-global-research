@@ -106,7 +106,8 @@ function tradePlan(snapshot: MarketSnapshot, riskPlan: RiskPlanId) {
   };
 }
 
-export function rankSnapshots(snapshots: MarketSnapshot[], riskPlan: RiskPlanId = "capital_first", formalEnabled = false): RankedSecurity[] {
+/** Browser/server emergency path: intentionally WATCH-only. Production BUY comes from canonical Python v2. */
+export function rankSnapshots(snapshots: MarketSnapshot[], riskPlan: RiskPlanId = "capital_first", _formalEnabled = false): RankedSecurity[] {
   return snapshots.map((snapshot) => {
     const raw = rawFactors(snapshot);
     const factors = normalizedFactors(snapshot, snapshots, raw);
@@ -118,21 +119,24 @@ export function rankSnapshots(snapshots: MarketSnapshot[], riskPlan: RiskPlanId 
     if (snapshot.price <= 0) hardGates.push("INVALID_PRICE");
     const confidence = clamp(100 - hardGates.length * 18 - (snapshot.freshness === "fallback" ? 12 : snapshot.freshness === "delayed" ? 6 : 0));
     const plan = tradePlan(snapshot, riskPlan);
-    const eligibleBuy = score >= 80 && confidence >= 75 && factors.regime >= 55 && plan.rewardRisk >= 2 && hardGates.length === 0;
-    const action = eligibleBuy ? "BUY" : score >= 65 ? "WATCH" : score < 50 ? "EXIT" : score < 55 ? "REDUCE" : "HOLD";
+    hardGates.push("SITE_FALLBACK_WATCH_ONLY");
+    const action = "WATCH" as const;
     const reasonCodes = [
       factors.trend >= 65 ? "TREND_CONFIRMED" : "TREND_UNCONFIRMED",
       factors.momentum >= 65 ? "MOMENTUM_LEADERSHIP" : "MOMENTUM_MIXED",
       factors.risk >= 55 ? "RISK_CONTROLLED" : "VOLATILITY_ELEVATED",
       factors.liquidity >= 50 ? "LIQUIDITY_ACCEPTABLE" : "LIQUIDITY_THIN",
-      formalEnabled ? "FORMAL_GATE_ACTIVE" : "IBKR_NOT_CONNECTED",
+      "PUBLIC_DATA_SHADOW",
     ];
     return {
       instrumentId: snapshot.instrumentId, symbol: snapshot.symbol, name: snapshot.name, market: snapshot.market,
       exchange: snapshot.exchange, currency: snapshot.currency, assetType: snapshot.assetType, sector: snapshot.sector ?? "Unclassified",
       price: round(snapshot.price, 4), changePct: round(pctChange(snapshot.price, snapshot.previousClose), 2), score,
-      confidence, action, status: formalEnabled ? "FORMAL" : "SHADOW", freshness: snapshot.freshness, source: snapshot.source,
+      confidence, action, status: "SHADOW", freshness: snapshot.freshness, source: snapshot.source,
       capturedAt: snapshot.capturedAt, factors, tradePlan: plan, reasonCodes, hardGates, modelVersion: MODEL_VERSION,
+      assetModel:snapshot.assetType === "ETF" ? "ETF_V2" : "STOCK_V2", validationStatus:"SHADOW", configHash:"site-watch-fallback",
+      dataQuality:{ completenessPct:Math.max(0,100-hardGates.length*15), sourceCount:1, warnings:snapshot.sourceWarnings ?? [], conflicts:[], corporateActionAnomalies:[], hardGates },
+      selection:{ eligibleBeforeCap:false, bucketRank:0, buyLimit:snapshot.assetType === "ETF" ? 1 : 3, capped:false },
     } as RankedSecurity;
   }).sort((a, b) => b.score - a.score);
 }

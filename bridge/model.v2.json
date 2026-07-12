@@ -1,0 +1,31 @@
+{
+  "modelVersion": "meridian-swing-v2.0.0",
+  "validationStatus": "SHADOW",
+  "historyYears": 5,
+  "minimumTradingDays": 252,
+  "completionCoveragePct": 95,
+  "shadowCompletenessPct": 98,
+  "stockBuyLimitPerMarket": 3,
+  "etfBuyLimitPerMarket": 1,
+  "buyScore": 80,
+  "buyConfidence": 80,
+  "minimumRelativeStrength": 70,
+  "minimumRewardRisk": 2,
+  "sourceConflictPct": 1,
+  "stockWeights": {
+    "trend": 0.25,
+    "momentum": 0.25,
+    "relativeStrength": 0.15,
+    "liquidity": 0.10,
+    "risk": 0.15,
+    "regime": 0.10
+  },
+  "etfWeights": {
+    "trend": 0.25,
+    "momentum": 0.20,
+    "relativeStrength": 0.15,
+    "liquidity": 0.20,
+    "risk": 0.15,
+    "structure": 0.05
+  }
+}

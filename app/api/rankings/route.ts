@@ -26,7 +26,7 @@ export async function GET(request: Request) {
         return true;
       });
       return Response.json({
-        rankings, meta: { mode:"SHADOW", primaryFeed:persisted.scan.provider, discovery:"full_universe_bridge", ibkrConnected:persisted.scan.provider.toLowerCase().includes("ibkr"), persistence:"available", markets, errors:[], generatedAt:persisted.scan.completedAt ?? persisted.scan.startedAt, scan:persisted.scan },
+        rankings, meta: { mode:"SHADOW", validationStatus:"SHADOW", backtestStatus:"PROVISIONAL_BACKTEST", formalEligible:false, primaryFeed:persisted.scan.provider, discovery:"full_universe_bridge", ibkrConnected:false, persistence:"available", markets, errors:[], generatedAt:persisted.scan.completedAt ?? persisted.scan.startedAt, scan:persisted.scan },
       }, { headers:{ "Cache-Control":"private, max-age=120" } });
     }
     const scanCount = marketParam === "ALL" ? 6 : 16;
@@ -42,7 +42,7 @@ export async function GET(request: Request) {
     let persistence = "available";
     try { await persistRankings(snapshots, ranked); } catch { persistence = "migration_pending"; }
     return Response.json({
-      rankings: ranked, meta: { mode: "SHADOW", primaryFeed: "public_sources", discovery: "limited_live_fallback", ibkrConnected: false, persistence, markets, errors: errors.slice(0, 8), generatedAt: new Date().toISOString(), scan:null },
+      rankings: ranked, meta: { mode: "SHADOW", validationStatus:"SHADOW", backtestStatus:"NOT_STARTED", formalEligible:false, primaryFeed: "public_sources", discovery: "limited_live_fallback_watch_only", ibkrConnected: false, persistence, markets, errors: errors.slice(0, 8), generatedAt: new Date().toISOString(), scan:null },
     }, { headers: { "Cache-Control": "private, max-age=120" } });
   } catch (error) { return jsonError("Market scan failed", 502, error); }
 }

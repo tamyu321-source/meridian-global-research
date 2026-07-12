@@ -36,6 +36,8 @@ export const signals = sqliteTable("signals", {
   modelVersion: text("model_version").notNull(), riskPlan: text("risk_plan").notNull(), status: text("status").notNull(), action: text("action").notNull(),
   score: real("score").notNull(), confidence: real("confidence").notNull(), tradePlanJson: text("trade_plan_json").notNull(),
   reasonsJson: text("reasons_json").notNull(), hardGatesJson: text("hard_gates_json").notNull(), sourceCapturedAt: text("source_captured_at").notNull(),
+  assetModel: text("asset_model").notNull().default("LEGACY_V1"), validationStatus: text("validation_status").notNull().default("SHADOW"),
+  configHash: text("config_hash").notNull().default(""), dataQualityJson: text("data_quality_json").notNull().default("{}"), selectionJson: text("selection_json").notNull().default("{}"),
   createdAt: timestamp("created_at"), updatedAt: timestamp("updated_at"),
 }, (table) => [index("signals_user_idx").on(table.userEmail, table.createdAt), index("signals_instrument_idx").on(table.instrumentId, table.createdAt), index("signals_scan_idx").on(table.scanId, table.score)]);
 
@@ -46,6 +48,9 @@ export const scanRuns = sqliteTable("scan_runs", {
   targetEtfsPerMarket: integer("target_etfs_per_market").notNull(), discoveredCount: integer("discovered_count").notNull().default(0),
   analyzedCount: integer("analyzed_count").notNull().default(0), failedCount: integer("failed_count").notNull().default(0),
   fallbackCount: integer("fallback_count").notNull().default(0), coverageJson: text("coverage_json").notNull().default("{}"),
+  configHash: text("config_hash").notNull().default(""), validationStatus: text("validation_status").notNull().default("SHADOW"),
+  sourceConflicts: integer("source_conflicts").notNull().default(0), corporateActionAnomalies: integer("corporate_action_anomalies").notNull().default(0),
+  qualityGatePassed: integer("quality_gate_passed", { mode:"boolean" }).notNull().default(false), universeSnapshotDate: text("universe_snapshot_date"),
   createdAt: timestamp("created_at"), updatedAt: timestamp("updated_at"),
 }, (table) => [index("scan_runs_status_idx").on(table.status, table.completedAt)]);
 
@@ -88,6 +93,28 @@ export const notifications = sqliteTable("notifications", {
 export const ingestEvents = sqliteTable("ingest_events", {
   idempotencyKey: text("idempotency_key").primaryKey(), provider: text("provider").notNull(), capturedAt: text("captured_at").notNull(),
   objectKey: text("object_key"), recordCount: integer("record_count").notNull(), status: text("status").notNull(), createdAt: timestamp("created_at"),
+});
+
+export const modelVersions = sqliteTable("model_versions", {
+  modelVersion: text("model_version").primaryKey(), configHash: text("config_hash").notNull(), configJson: text("config_json").notNull(),
+  validationStatus: text("validation_status").notNull(), activatedAt: text("activated_at"), createdAt: timestamp("created_at"),
+});
+
+export const universeSnapshots = sqliteTable("universe_snapshots", {
+  id: integer("id").primaryKey({ autoIncrement:true }), snapshotDate: text("snapshot_date").notNull(), market: text("market").notNull(),
+  scanId: text("scan_id").notNull(), discoveredCount: integer("discovered_count").notNull(), analyzedCount: integer("analyzed_count").notNull(),
+  source: text("source").notNull(), coveragePct: real("coverage_pct").notNull(), objectKey: text("object_key"), createdAt: timestamp("created_at"),
+}, (table) => [uniqueIndex("universe_snapshots_unique_idx").on(table.snapshotDate, table.market, table.scanId)]);
+
+export const shadowValidationDays = sqliteTable("shadow_validation_days", {
+  modelVersion: text("model_version").notNull(), validationDate: text("validation_date").notNull(), scanId: text("scan_id").notNull(),
+  completenessPct: real("completeness_pct").notNull(), freshnessPct: real("freshness_pct").notNull(), consistencyPct: real("consistency_pct").notNull(),
+  majorIncident: integer("major_incident", { mode:"boolean" }).notNull().default(false), createdAt: timestamp("created_at"),
+}, (table) => [uniqueIndex("shadow_validation_unique_idx").on(table.modelVersion, table.validationDate)]);
+
+export const dataArtifacts = sqliteTable("data_artifacts", {
+  objectKey: text("object_key").primaryKey(), modelVersion: text("model_version").notNull(), kind: text("kind").notNull(),
+  contentType: text("content_type").notNull(), bytes: integer("bytes").notNull(), sha256: text("sha256").notNull(), createdAt: timestamp("created_at"),
 });
 
 export const auditLogs = sqliteTable("audit_logs", {

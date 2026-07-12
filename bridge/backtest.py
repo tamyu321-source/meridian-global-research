@@ -1,73 +1,92 @@
-"""Point-in-time-safe price/volume walk-forward backtest for Meridian v1."""
+"""Walk-forward provisional backtest using the exact Meridian v2 model."""
 from __future__ import annotations
 
 import argparse
-import json
-import math
-import statistics
-import os
 import hashlib
 import hmac
+import json
+import math
+import os
+import statistics
 import urllib.request
 from datetime import datetime, timezone
-from meridian_bridge import MARKETS, discover, get_json
-from urllib.parse import quote
+
+try:
+    from .meridian_bridge import MARKETS, YahooClient, _snapshot, discover_universe, load_local_env
+    from .model_v2 import CONFIG_HASH, MODEL_VERSION, rank_snapshots
+except ImportError:
+    from meridian_bridge import MARKETS, YahooClient, _snapshot, discover_universe, load_local_env
+    from model_v2 import CONFIG_HASH, MODEL_VERSION, rank_snapshots
+
+MARKET_COSTS = {
+    "US":{"commissionBps":5,"sellTaxBps":0.3,"slippageBps":8}, "CN":{"commissionBps":3,"sellTaxBps":50,"slippageBps":10},
+    "HK":{"commissionBps":25,"sellTaxBps":10,"slippageBps":12}, "TW":{"commissionBps":14.25,"sellTaxBps":30,"slippageBps":10},
+    "JP":{"commissionBps":8,"sellTaxBps":0,"slippageBps":8}, "KR":{"commissionBps":15,"sellTaxBps":18,"slippageBps":10},
+    "SG":{"commissionBps":18,"sellTaxBps":0,"slippageBps":10},
+}
 
 
-def series(symbol: str):
-    payload=get_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol)}?range=10y&interval=1d&events=div%2Csplits&includeAdjustedClose=true")
-    result=((payload.get("chart") or {}).get("result") or [None])[0]
-    if not result:return []
-    stamps=result.get("timestamp") or []; adj=(((result.get("indicators") or {}).get("adjclose") or [{}])[0].get("adjclose") or [])
-    return [(stamps[i],float(value)) for i,value in enumerate(adj) if value]
+def _metrics(trades):
+    returns = [item["returnPct"] / 100 for item in trades]; wins = [value for value in returns if value > 0]; losses = [value for value in returns if value < 0]
+    equity = peak = 1.0; drawdown = 0.0
+    for value in returns: equity *= 1 + value; peak = max(peak, equity); drawdown = min(drawdown, equity / peak - 1)
+    average = statistics.fmean(returns) if returns else 0; deviation = statistics.stdev(returns) if len(returns) > 1 else 0
+    return {"tradeCount":len(trades),"expectancyPct":round(average*100,3),"profitFactor":round(sum(wins)/abs(sum(losses)),3) if losses else None,"sharpe":round(average/deviation*math.sqrt(252/30),3) if deviation else 0,"maxDrawdownPct":round(drawdown*100,3),"netReturnPct":round((equity-1)*100,3)}
 
 
-def backtest(prices, cost_bps=25):
-    trades=[]; position=None
-    for index in range(200,len(prices)):
-        stamp,price=prices[index]; history=[p for _,p in prices[:index+1]]
-        sma20=statistics.fmean(history[-20:]); sma50=statistics.fmean(history[-50:]); sma200=statistics.fmean(history[-200:])
-        if position is None and price>sma20>sma50>sma200:
-            position={"entryAt":stamp,"entry":price,"stop":price*0.92,"days":0}
-        elif position:
-            position["days"]+=1
-            exit_now=price<=position["stop"] or price<sma50 or position["days"]>=60
-            if exit_now:
-                gross=price/position["entry"]-1; net=gross-cost_bps/10000
-                trades.append({**position,"exitAt":stamp,"exit":price,"returnPct":round(net*100,3)})
-                position=None
-    returns=[t["returnPct"]/100 for t in trades]; wins=[r for r in returns if r>0]; losses=[r for r in returns if r<0]
-    equity=1; peak=1; max_dd=0
-    for ret in returns:
-        equity*=1+ret; peak=max(peak,equity); max_dd=min(max_dd,equity/peak-1)
-    avg=statistics.fmean(returns) if returns else 0; sd=statistics.stdev(returns) if len(returns)>1 else 0
-    return {"trades":trades,"metrics":{"tradeCount":len(trades),"expectancyPct":round(avg*100,3),"profitFactor":round(sum(wins)/abs(sum(losses)),3) if losses else None,"sharpe":round(avg/sd*math.sqrt(252/30),3) if sd else 0,"maxDrawdownPct":round(max_dd*100,3),"netReturnPct":round((equity-1)*100,3)}}
+def walk_forward(snapshots, market):
+    """Signals at close, executions at next open; stop wins same-day ambiguity."""
+    by_symbol = {item["symbol"]:item for item in snapshots}; dates = sorted(set(bar["timestamp"] for item in snapshots for bar in item["bars"]))
+    split = dates[max(0, len(dates) - 504)] if dates else 0; positions, trades = {}, []
+    for stamp in dates:
+        slices, next_bars = [], {}
+        for symbol, item in by_symbol.items():
+            bars = [bar for bar in item["bars"] if bar["timestamp"] <= stamp]
+            future = next((bar for bar in item["bars"] if bar["timestamp"] > stamp), None)
+            if len(bars) >= 252 and future:
+                slices.append({**item,"bars":bars,"price":bars[-1]["close"],"previousClose":bars[-2]["close"],"capturedAt":datetime.fromtimestamp(stamp, timezone.utc).isoformat()}); next_bars[symbol] = future
+        if not slices: continue
+        ranks = rank_snapshots(slices, allow_buy=True); costs = MARKET_COSTS[market]
+        for rank in ranks:
+            next_bar = next_bars.get(rank["symbol"])
+            if not next_bar: continue
+            position = positions.get(rank["symbol"])
+            if position:
+                # Conservative ordering: if stop and target are both touched, stop fills first.
+                exit_price = None; reason = None
+                if next_bar["low"] <= position["stop"]: exit_price, reason = position["stop"], "STOP_FIRST"
+                elif next_bar["high"] >= position["target2"]: exit_price, reason = position["target2"], "TARGET_2"
+                elif rank["score"] < 50 or next_bar["timestamp"] - position["entryAt"] >= 84 * 86400: exit_price, reason = next_bar["open"], "MODEL_EXIT"
+                if exit_price:
+                    exit_price *= 1 - costs["slippageBps"] / 10000; gross = exit_price / position["entry"] - 1; fees = (costs["commissionBps"] * 2 + costs["sellTaxBps"]) / 10000
+                    trades.append({**position,"exitAt":next_bar["timestamp"],"exit":round(exit_price,4),"returnPct":round((gross-fees)*100,3),"exitReason":reason,"sample":"OOS" if next_bar["timestamp"] >= split else "IS"}); del positions[rank["symbol"]]
+            elif rank["action"] == "BUY" and len(positions) < 10:
+                entry = next_bar["open"] * (1 + costs["slippageBps"] / 10000)
+                positions[rank["symbol"]] = {"market":market,"assetType":rank["assetType"],"symbol":rank["symbol"],"entryAt":next_bar["timestamp"],"signalAt":stamp,"entry":round(entry,4),"stop":rank["tradePlan"]["stop"],"target1":rank["tradePlan"]["target1"],"target2":rank["tradePlan"]["target2"]}
+    return trades
+
+
+def upload(endpoint, secret, token, result):
+    body = json.dumps(result, separators=(",", ":"), ensure_ascii=False).encode(); timestamp = datetime.now(timezone.utc).isoformat(); signature = hmac.new(secret.encode(), timestamp.encode()+b"."+body, hashlib.sha256).hexdigest()
+    headers = {"Content-Type":"application/json","X-Meridian-Timestamp":timestamp,"X-Meridian-Signature":signature,"X-Idempotency-Key":"backtest-"+hashlib.sha256(body).hexdigest()[:32]}
+    if token: headers["OAI-Sites-Authorization"] = "Bearer " + token
+    with urllib.request.urlopen(urllib.request.Request(endpoint.rstrip("/")+"/api/ingest/backtests",data=body,method="POST",headers=headers),timeout=180) as response: return json.loads(response.read().decode())
 
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument("--markets",default=",".join(MARKETS)); parser.add_argument("--count",type=int,default=10); parser.add_argument("--output",default="backtest-result.json"); parser.add_argument("--endpoint",default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret",default=os.getenv("INGEST_HMAC_SECRET")); args=parser.parse_args()
-    result={"modelVersion":"meridian-swing-v1.0.0","generatedAt":datetime.now(timezone.utc).isoformat(),"markets":{}}
-    for market in [m for m in args.markets.split(",") if m in MARKETS]:
-        market_trades=[]
-        for candidate in discover(market,args.count):
-            outcome=backtest(series(candidate["symbol"])); market_trades.extend([{**t,"symbol":candidate["symbol"]} for t in outcome["trades"]])
-        metrics=backtest([(i,1.0) for i in range(201)]) ["metrics"] if not market_trades else aggregate(market_trades)
-        result["markets"][market]={"metrics":metrics,"trades":market_trades}
-    with open(args.output,"w",encoding="utf-8") as handle:json.dump(result,handle,ensure_ascii=False,indent=2)
-    if args.endpoint and args.secret: upload_result(args.endpoint,args.secret,result)
-    print(args.output)
+    load_local_env(); parser = argparse.ArgumentParser(); parser.add_argument("--markets",default=",".join(MARKETS)); parser.add_argument("--stocks",type=int,default=30); parser.add_argument("--etfs",type=int,default=10); parser.add_argument("--output",default="backtest-result.json"); parser.add_argument("--endpoint",default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret",default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token",default=os.getenv("OAI_SITES_BYPASS_TOKEN", "")); args=parser.parse_args()
+    client = YahooClient(); result = {"modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"validationStatus":"PROVISIONAL_BACKTEST","survivorshipBias":True,"generatedAt":datetime.now(timezone.utc).isoformat(),"executionPolicy":"signal-close_next-open_stop-first","markets":{}}
+    all_trades=[]
+    for market in [item for item in args.markets.split(",") if item in MARKETS]:
+        candidates=discover_universe(client,market,args.stocks,args.etfs); snapshots=[]
+        for candidate in candidates:
+            try: snapshots.append(_snapshot(market,candidate,client.chart(candidate["symbol"])))
+            except Exception: pass
+        trades=walk_forward(snapshots,market); all_trades.extend(trades); result["markets"][market]={"metrics":_metrics(trades),"trades":trades}
+    result["overall"]=_metrics(all_trades)
+    with open(args.output,"w",encoding="utf-8") as handle: json.dump(result,handle,ensure_ascii=False,indent=2)
+    if args.endpoint and args.secret: upload(args.endpoint,args.secret,args.sites_token,result)
+    print(json.dumps({"output":args.output,"overall":result["overall"]},ensure_ascii=False))
 
 
-def aggregate(trades):
-    returns=[t["returnPct"]/100 for t in trades]; wins=[r for r in returns if r>0]; losses=[r for r in returns if r<0]; avg=statistics.fmean(returns); sd=statistics.stdev(returns) if len(returns)>1 else 0; equity=1;peak=1;dd=0
-    for ret in returns:equity*=1+ret;peak=max(peak,equity);dd=min(dd,equity/peak-1)
-    return {"tradeCount":len(trades),"expectancyPct":round(avg*100,3),"profitFactor":round(sum(wins)/abs(sum(losses)),3) if losses else None,"sharpe":round(avg/sd*math.sqrt(252/30),3) if sd else 0,"maxDrawdownPct":round(dd*100,3),"netReturnPct":round((equity-1)*100,3)}
-
-
-def upload_result(endpoint,secret,result):
-    body=json.dumps(result,separators=(",",":"),ensure_ascii=False).encode("utf-8"); timestamp=datetime.now(timezone.utc).isoformat(); signature=hmac.new(secret.encode(),timestamp.encode()+b"."+body,hashlib.sha256).hexdigest()
-    request=urllib.request.Request(endpoint.rstrip("/")+"/api/ingest/backtests",data=body,method="POST",headers={"Content-Type":"application/json","X-Meridian-Timestamp":timestamp,"X-Meridian-Signature":signature})
-    with urllib.request.urlopen(request,timeout=60) as response:return json.loads(response.read().decode())
-
-
-if __name__=="__main__":main()
+if __name__ == "__main__": main()

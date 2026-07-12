@@ -43,6 +43,8 @@ export type YahooCandidate = {
   exchange?: string;
   fullExchangeName?: string;
   currency?: string;
+  sector?: string;
+  industry?: string;
   discoverySource?: "yahoo-screener" | "market-fallback";
 };
 
@@ -154,7 +156,7 @@ export async function discoverMarket(market: MarketCode, count = 12, assetType: 
 
 export async function fetchSnapshot(candidate: YahooCandidate, market: MarketCode): Promise<MarketSnapshot> {
   const symbol = cleanSymbol(String(candidate.symbol));
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=2y&interval=1d&events=div%2Csplits&includeAdjustedClose=true`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=5y&interval=1d&events=div%2Csplits&includeAdjustedClose=true`;
   const payload = await jsonFetch<{ chart?: { result?: Array<{ meta?: Record<string, unknown>; timestamp?: number[]; indicators?: { quote?: Array<Record<string, Array<number | null>>>; adjclose?: Array<{ adjclose?: Array<number | null> }> } }>; error?: unknown } }>(url);
   const result = payload.chart?.result?.[0];
   if (!result) throw new Error(`No chart data for ${symbol}`);
@@ -163,8 +165,8 @@ export async function fetchSnapshot(candidate: YahooCandidate, market: MarketCod
   const adjusted = result.indicators?.adjclose?.[0]?.adjclose ?? [];
   const bars: PriceBar[] = timestamps.map((timestamp, index) => ({
     timestamp, open: Number(quote.open?.[index] ?? adjusted[index] ?? 0), high: Number(quote.high?.[index] ?? adjusted[index] ?? 0),
-    low: Number(quote.low?.[index] ?? adjusted[index] ?? 0), close: Number(adjusted[index] ?? quote.close?.[index] ?? 0), volume: Number(quote.volume?.[index] ?? 0),
-  })).filter((bar) => bar.close > 0);
+    low: Number(quote.low?.[index] ?? adjusted[index] ?? 0), close: Number(quote.close?.[index] ?? adjusted[index] ?? 0), adjClose:Number(adjusted[index] ?? quote.close?.[index] ?? 0), volume: Number(quote.volume?.[index] ?? 0),
+  })).filter((bar) => bar.close > 0 && bar.open > 0 && bar.high > 0 && bar.low > 0);
   if (bars.length < 20) throw new Error(`Insufficient chart data for ${symbol}`);
   const meta = result.meta ?? {};
   const price = Number(meta.regularMarketPrice ?? bars.at(-1)?.close ?? 0);
@@ -177,7 +179,7 @@ export async function fetchSnapshot(candidate: YahooCandidate, market: MarketCod
   return {
     instrumentId: `${market}:${symbol}`, symbol, name: candidate.shortName ?? candidate.longName ?? (metaName || symbol), market,
     exchange: candidate.fullExchangeName ?? String(meta.fullExchangeName ?? candidate.exchange ?? config.exchange), currency: candidate.currency ?? String(meta.currency ?? config.currency),
-    assetType, source: fallback ? "Yahoo Finance market fallback + public chart" : "Yahoo Finance exchange screener + public chart",
+    assetType, sector:candidate.sector ?? candidate.industry ?? "Unclassified", source: fallback ? "Yahoo Finance market fallback + public chart" : "Yahoo Finance exchange screener + public chart",
     freshness: fallback ? "fallback" : "delayed", capturedAt: new Date().toISOString(), bars, price, previousClose,
     sourceWarnings: fallback ? ["SCREENER_DISCOVERY_FALLBACK"] : undefined,
   };

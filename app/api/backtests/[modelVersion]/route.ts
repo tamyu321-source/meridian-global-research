@@ -12,6 +12,6 @@ export async function GET(_request: Request, context: { params: Promise<{ modelV
   try {
     const result = await db.prepare("SELECT * FROM backtest_runs WHERE model_version=? ORDER BY created_at DESC").bind(modelVersion).all();
     const runs = (result.results ?? []).map((row: Record<string, unknown>) => ({ ...row, metrics: row.metrics_json ? JSON.parse(String(row.metrics_json)) : null }));
-    return Response.json({ modelVersion, status: runs.length ? "IN_PROGRESS" : "NOT_STARTED", acceptance, runs, markets: MARKETS.map((market) => runs.find((run: Record<string, unknown>) => String(run.market) === market) ?? { market, status: "NOT_STARTED" }) });
+    return Response.json({ modelVersion, status: runs.length ? "PROVISIONAL_BACKTEST" : "NOT_STARTED", validationStatus:"PROVISIONAL_BACKTEST", formalEligible:false, survivorshipBias:true, acceptance, runs, markets: MARKETS.map((market) => runs.find((run: Record<string, unknown>) => String(run.market) === market) ?? { market, status: "NOT_STARTED" }) });
   } catch { return Response.json({ modelVersion, status: "MIGRATION_PENDING", acceptance, markets: MARKETS.map((market) => ({ market, status: "NOT_STARTED" })) }); }
 }

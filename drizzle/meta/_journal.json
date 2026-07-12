@@ -36,6 +36,13 @@
       "when": 1783848051474,
       "tag": "0004_sync_paper_capital",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1783861623663,
+      "tag": "0005_freezing_landau",
+      "breakpoints": true
     }
   ]
 }

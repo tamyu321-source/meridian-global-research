@@ -17,6 +17,8 @@ test("ranking is deterministic and public data remains shadow", () => {
   assert.deepEqual(first.map(item => [item.symbol,item.score,item.status]), second.map(item => [item.symbol,item.score,item.status]));
   assert.equal(first[0].symbol, "UP");
   assert.ok(first.every(item => item.status === "SHADOW"));
+  assert.ok(first.every(item => item.action === "WATCH"));
+  assert.ok(first.every(item => item.hardGates.includes("SITE_FALLBACK_WATCH_ONLY")));
 });
 
 test("insufficient history and stale data create hard gates", () => {
