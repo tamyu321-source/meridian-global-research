@@ -86,8 +86,9 @@ def main():
             try: snapshots.append(_snapshot(market,candidate,client.chart(candidate["symbol"])))
             except Exception: pass
         enrich_candidate_profiles(client,cache,snapshots,workers=6)
-        trades=walk_forward(snapshots,market); all_trades.extend(trades); result["markets"][market]={"metrics":_metrics(trades),"trades":trades}
-    result["overall"]=_metrics(all_trades)
+        trades=walk_forward(snapshots,market); all_trades.extend(trades); oos=[item for item in trades if item.get("sample") == "OOS"]
+        result["markets"][market]={"metrics":_metrics(oos),"allPeriodMetrics":_metrics(trades),"trades":trades}
+    result["overall"]=_metrics([item for item in all_trades if item.get("sample") == "OOS"]); result["allPeriodOverall"]=_metrics(all_trades)
     with open(args.output,"w",encoding="utf-8") as handle: json.dump(result,handle,ensure_ascii=False,indent=2)
     cache.close()
     if args.endpoint and args.secret: upload(args.endpoint,args.secret,args.sites_token,result)
