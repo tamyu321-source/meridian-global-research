@@ -1,5 +1,6 @@
 import { rankSnapshots } from "@/lib/algorithm";
 import { fetchSymbolSnapshot } from "@/lib/public-data";
+import { loadLatestScanRankings } from "@/lib/repository";
 import { jsonError } from "@/lib/server";
 import { MARKETS, type AssetType, type MarketCode, type RiskPlanId } from "@/lib/types";
 
@@ -17,6 +18,14 @@ export async function GET(request: Request, context: { params: Promise<{ instrum
   const assetType = (url.searchParams.get("assetType") === "ETF" ? "ETF" : "STOCK") as AssetType;
   const riskPlan = (url.searchParams.get("riskPlan") ?? "capital_first") as RiskPlanId;
   try {
+    const persisted = await loadLatestScanRankings([market], "ALL", riskPlan);
+    const security = persisted?.rankings.find((item) => item.instrumentId === decoded);
+    if (security) {
+      try {
+        const live = await fetchSymbolSnapshot(symbol, market, security.name, security.assetType);
+        return Response.json({ security, bars:live.bars.slice(-260), scan:persisted?.scan });
+      } catch { return Response.json({ security, bars:[], scan:persisted?.scan }); }
+    }
     const snapshot = await fetchSymbolSnapshot(symbol, market, symbol, assetType);
     return Response.json({ security: rankSnapshots([snapshot], riskPlan, false)[0], bars: snapshot.bars.slice(-260) });
   } catch (error) { return jsonError("Security data unavailable", 502, error); }

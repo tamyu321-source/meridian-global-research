@@ -5,7 +5,8 @@ import type { Locale, RankedSecurity, RiskPlanId } from "@/lib/types";
 import { MARKETS, MODEL_VERSION, RISK_PLANS } from "@/lib/types";
 
 export type AppView = "dashboard" | "scanner" | "signals" | "portfolio" | "backtests" | "health" | "settings" | "security";
-type RankingPayload = { rankings: RankedSecurity[]; meta: { mode: string; primaryFeed: string; ibkrConnected: boolean; generatedAt: string; errors?: string[] } };
+type ScanMeta = { id:string; status:string; completedAt:string|null; discoveredCount:number; analyzedCount:number; failedCount:number; fallbackCount:number; targetStocksPerMarket:number; targetEtfsPerMarket:number; coverage:Record<string,unknown> };
+type RankingPayload = { rankings: RankedSecurity[]; meta: { mode: string; primaryFeed: string; discovery?:string; ibkrConnected: boolean; generatedAt: string; errors?: string[]; scan?:ScanMeta|null } };
 
 const words = {
   "zh-TW": { nav:["總覽","市場掃描","訊號中心","模擬組合","回測驗證","資料健康","設定"], shadow:"影子訊號", public:"公開來源／延遲", title:"跨市場投資研究", subtitle:"每日全市場排名，盤中確認進出場；所有訊號保留來源、風險與模型版本。", scan:"重新掃描", loading:"正在向市場來源取得資料…", noData:"目前沒有可驗證資料。請稍後重試或檢查資料健康度。", market:"市場", asset:"資產", risk:"風險計畫", all:"全部", stocks:"普通股", etfs:"ETF", score:"分數", signal:"訊號", price:"價格", freshness:"資料", factors:"六因子拆解", plan:"完整交易計畫", entry:"進場區", stop:"停損", targets:"分批目標", maxWeight:"最大倉位", reason:"判斷依據", blocked:"禁止正式買進", paperBuy:"模擬買進", qty:"數量", setup:"請先在設定頁輸入模擬資金。", health:"七市場資料健康", ibkr:"IBKR 尚未啟用", backtest:"回測與正式化門檻", portfolio:"模擬投資組合", settings:"研究設定", save:"儲存設定", notify:"測試通知", disclaimer:"本系統為研究與模擬決策工具，不保證獲利；IBKR 與影子驗證未完成前，不會標記正式即時訊號。" },
@@ -86,11 +87,19 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
             <Control label={t.asset}><button className={assetType === "ALL" ? "active" : ""} onClick={() => setAssetType("ALL")}>{t.all}</button><button className={assetType === "STOCK" ? "active" : ""} onClick={() => setAssetType("STOCK")}>{t.stocks}</button><button className={assetType === "ETF" ? "active" : ""} onClick={() => setAssetType("ETF")}>{t.etfs}</button></Control>
             <Control label={t.risk}>{(Object.keys(RISK_PLANS) as RiskPlanId[]).map((item) => <button key={item} className={riskPlan === item ? "active" : ""} onClick={() => setRiskPlan(item)}>{item === "capital_first" ? "0.5%" : item === "balanced" ? "1.0%" : "1.5%"}</button>)}</Control>
           </section>}
+          {view !== "security" && payload?.meta.scan && <section className="scan-audit-strip" aria-label="Full universe scan coverage">
+            <div><span>FULL SCAN</span><strong>{payload.meta.scan.status.toUpperCase()}</strong></div>
+            <div><span>DISCOVERED</span><strong>{payload.meta.scan.discoveredCount.toLocaleString(locale)}</strong></div>
+            <div><span>ANALYZED</span><strong>{payload.meta.scan.analyzedCount.toLocaleString(locale)}</strong></div>
+            <div><span>FAILED</span><strong>{payload.meta.scan.failedCount.toLocaleString(locale)}</strong></div>
+            <div><span>FALLBACK</span><strong>{payload.meta.scan.fallbackCount.toLocaleString(locale)}</strong></div>
+            <p>500 STOCKS + 100 ETFs / MARKET · {payload.meta.scan.completedAt ? new Date(payload.meta.scan.completedAt).toLocaleString(locale) : "RUNNING"}</p>
+          </section>}
           {view === "dashboard" && <section className="metric-grid"><Metric label="SHADOW BUY" value={summary.buy} tone="green"/><Metric label="WATCH" value={summary.watch}/><Metric label="HARD GATED" value={summary.blocked} tone="red"/><Metric label="IBKR FEED" value="OFF" tone="red"/></section>}
           {loading && <div className="state-card"><span className="loading-line" />{t.loading}</div>}
           {!loading && error && <div className="state-card error-state">{error}</div>}
           {!loading && !error && view !== "security" && <section className="research-layout">
-            <div className="ranking-panel"><div className="panel-title"><strong>{payload?.rankings.length ?? 0} VERIFIED CANDIDATES</strong><span>{payload?.meta.generatedAt ? new Date(payload.meta.generatedAt).toLocaleString(locale) : "—"}</span></div>
+            <div className="ranking-panel"><div className="panel-title"><strong>{payload?.rankings.length ?? 0} RANKED · {payload?.meta.scan?.analyzedCount?.toLocaleString(locale) ?? "LIMITED"} ANALYZED</strong><span>{payload?.meta.generatedAt ? new Date(payload.meta.generatedAt).toLocaleString(locale) : "—"}</span></div>
               {payload?.rankings.length ? <div className="ranking-list">{payload.rankings.map((item, index) => <button key={item.instrumentId} onClick={() => setSelected(item)} className={selectedRank?.instrumentId === item.instrumentId ? "selected" : ""}>
                 <span className="rank-no">{String(index + 1).padStart(2,"0")}</span><span className="ticker"><strong>{item.symbol}</strong><small>{item.name}</small></span><span className="tags"><i>{item.market}</i><i>{item.assetType}</i></span><span className={`action action-${item.action.toLowerCase()}`}>{item.action}</span><span className="quote"><strong>{item.price.toLocaleString(locale)}</strong><small>{item.changePct >= 0 ? "+" : ""}{item.changePct}%</small></span><span className="score-cell"><strong>{item.score}</strong><i style={{"--score":`${item.score}%`} as React.CSSProperties}/></span>
               </button>)}</div> : <div className="empty-state">{t.noData}</div>}

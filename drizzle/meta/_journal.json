@@ -8,6 +8,13 @@
       "when": 1783773905484,
       "tag": "0000_purple_arachne",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1783844195185,
+      "tag": "0001_whole_the_hunter",
+      "breakpoints": true
     }
   ]
 }

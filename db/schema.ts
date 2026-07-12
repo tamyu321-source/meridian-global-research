@@ -32,11 +32,22 @@ export const dailyScores = sqliteTable("daily_scores", {
 
 export const signals = sqliteTable("signals", {
   id: text("id").primaryKey(), userEmail: text("user_email").notNull(), instrumentId: text("instrument_id").notNull().references(() => securities.instrumentId),
+  scanId: text("scan_id"),
   modelVersion: text("model_version").notNull(), riskPlan: text("risk_plan").notNull(), status: text("status").notNull(), action: text("action").notNull(),
   score: real("score").notNull(), confidence: real("confidence").notNull(), tradePlanJson: text("trade_plan_json").notNull(),
   reasonsJson: text("reasons_json").notNull(), hardGatesJson: text("hard_gates_json").notNull(), sourceCapturedAt: text("source_captured_at").notNull(),
   createdAt: timestamp("created_at"), updatedAt: timestamp("updated_at"),
-}, (table) => [index("signals_user_idx").on(table.userEmail, table.createdAt), index("signals_instrument_idx").on(table.instrumentId, table.createdAt)]);
+}, (table) => [index("signals_user_idx").on(table.userEmail, table.createdAt), index("signals_instrument_idx").on(table.instrumentId, table.createdAt), index("signals_scan_idx").on(table.scanId, table.score)]);
+
+export const scanRuns = sqliteTable("scan_runs", {
+  id: text("id").primaryKey(), provider: text("provider").notNull(), modelVersion: text("model_version").notNull(),
+  status: text("status").notNull(), startedAt: text("started_at").notNull(), completedAt: text("completed_at"),
+  requestedMarkets: text("requested_markets").notNull(), targetStocksPerMarket: integer("target_stocks_per_market").notNull(),
+  targetEtfsPerMarket: integer("target_etfs_per_market").notNull(), discoveredCount: integer("discovered_count").notNull().default(0),
+  analyzedCount: integer("analyzed_count").notNull().default(0), failedCount: integer("failed_count").notNull().default(0),
+  fallbackCount: integer("fallback_count").notNull().default(0), coverageJson: text("coverage_json").notNull().default("{}"),
+  createdAt: timestamp("created_at"), updatedAt: timestamp("updated_at"),
+}, (table) => [index("scan_runs_status_idx").on(table.status, table.completedAt)]);
 
 export const watchlist = sqliteTable("watchlist", {
   userEmail: text("user_email").notNull(), instrumentId: text("instrument_id").notNull().references(() => securities.instrumentId), createdAt: timestamp("created_at"),
