@@ -1,5 +1,7 @@
 import { fetchFxRate } from "@/lib/fx";
 import { estimateMarketCosts, marketRulesForClient, marketSessionState, qualifiesForMinimumLotException, validateMarketQuantity, validatePositionQuantity } from "@/lib/market-rules";
+import { fetchSymbolSnapshot } from "@/lib/public-data";
+import { paperQuoteIsExecutable, paperQuoteNeedsRefresh } from "@/lib/quote-freshness";
 import { recordAudit } from "@/lib/repository";
 import { apiUser, runtimeEnv } from "@/lib/server";
 import { RISK_PLANS, type AssetType, type MarketCode, type RiskPlanId } from "@/lib/types";
@@ -22,6 +24,18 @@ function chinaTradingDayStartUtc(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone:"Asia/Shanghai", year:"numeric", month:"2-digit", day:"2-digit" }).formatToParts(now);
   const get = (type:string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
   return new Date(Date.UTC(get("year"), get("month") - 1, get("day")) - 8 * 60 * 60_000).toISOString().slice(0, 19).replace("T", " ");
+}
+
+async function refreshPaperQuote(db:D1Database, quote:DbRow) {
+  const capturedAt = String(quote.captured_at ?? "");
+  if (!paperQuoteNeedsRefresh(capturedAt, String(quote.freshness))) return quote;
+  const market = String(quote.market) as MarketCode;
+  const assetType = String(quote.asset_type) as AssetType;
+  const snapshot = await fetchSymbolSnapshot(String(quote.symbol), market, String(quote.name ?? quote.symbol), assetType);
+  if (!snapshot.price || snapshot.price <= 0 || snapshot.freshness === "stale") throw new Error("Fresh executable quote unavailable");
+  await db.prepare(`UPDATE latest_quotes SET price=?,previous_close=?,source=?,freshness=?,captured_at=?,updated_at=CURRENT_TIMESTAMP WHERE instrument_id=?`)
+    .bind(snapshot.price, snapshot.previousClose, snapshot.source, snapshot.freshness, snapshot.capturedAt, snapshot.instrumentId).run();
+  return { ...quote, price:snapshot.price, previous_close:snapshot.previousClose, source:snapshot.source, freshness:snapshot.freshness, captured_at:snapshot.capturedAt };
 }
 
 async function portfolioState(db:D1Database, portfolio:DbRow) {
@@ -82,13 +96,14 @@ export async function POST(request:Request) {
   try {
     const portfolio = await db.prepare("SELECT * FROM paper_portfolios WHERE user_email=? LIMIT 1").bind(user.email).first<DbRow>();
     if (!portfolio) return paperError("SETUP_REQUIRED", 409);
-    const quote = await db.prepare(`SELECT q.*,s.market,s.currency,s.asset_type,s.sector FROM latest_quotes q JOIN securities s ON s.instrument_id=q.instrument_id WHERE q.instrument_id=?`).bind(payload.instrumentId).first<DbRow>();
+    let quote = await db.prepare(`SELECT q.*,s.symbol,s.name,s.market,s.currency,s.asset_type,s.sector FROM latest_quotes q JOIN securities s ON s.instrument_id=q.instrument_id WHERE q.instrument_id=?`).bind(payload.instrumentId).first<DbRow>();
     if (!quote) return paperError("NO_QUOTE", 409);
+    try { quote = await refreshPaperQuote(db, quote); }
+    catch (error) { return paperError("STALE_QUOTE", 409, {}, error); }
     const market = String(quote.market) as MarketCode, assetType = String(quote.asset_type) as AssetType;
     const quantityError = validateMarketQuantity(market, assetType, side, quantity);
     if (quantityError) return paperError("MARKET_QUANTITY_RULE", 409, { market, quantity });
-    const age = Date.now() - Date.parse(String(quote.captured_at));
-    if (String(quote.freshness) === "stale" || age > 36 * 60 * 60_000) return paperError("STALE_QUOTE", 409);
+    if (!paperQuoteIsExecutable(String(quote.captured_at), String(quote.freshness))) return paperError("STALE_QUOTE", 409);
     const session = marketSessionState(market);
     const price = Number(quote.price), grossLocal = price * quantity;
     const costs = estimateMarketCosts(market, assetType, side, grossLocal, quantity);
