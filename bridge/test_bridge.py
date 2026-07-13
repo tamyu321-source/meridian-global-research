@@ -1,3 +1,4 @@
+import copy
 import os
 import tempfile
 import unittest
@@ -48,6 +49,14 @@ class BridgeUnitTests(unittest.TestCase):
     def test_daily_buy_cap_is_enforced(self):
         universe=[fixture(f"S{i}",.2+i*.005) for i in range(8)] + [fixture(f"E{i}",.2+i*.005,"ETF") for i in range(4)]
         rows=rank_snapshots(universe); self.assertLessEqual(sum(row["action"]=="BUY" and row["assetType"]=="STOCK" for row in rows),3); self.assertLessEqual(sum(row["action"]=="BUY" and row["assetType"]=="ETF" for row in rows),1)
+
+    def test_precomputed_v2_factors_preserve_exact_ranking(self):
+        universe=[fixture(f"P{i}",.12+i*.01) for i in range(6)]
+        expected=rank_snapshots(copy.deepcopy(universe))
+        optimized=copy.deepcopy(universe)
+        for item in optimized: item["_barsValidated"]=True
+        raw={item["instrumentId"]:raw_factors(item) for item in optimized}
+        self.assertEqual(rank_snapshots(optimized,raw_by_id=raw),expected)
 
     def test_market_parquet_can_restore_asset_specific_history(self):
         with tempfile.TemporaryDirectory() as source_root, tempfile.TemporaryDirectory() as restore_root:

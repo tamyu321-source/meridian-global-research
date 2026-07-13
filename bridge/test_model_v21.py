@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from bridge.model_v21 import MODEL_VERSION, _entry_setup, rank_snapshots, raw_factors
+from bridge.model_v21 import MODEL_VERSION, _entry_setup, build_market_context, rank_snapshots, raw_factors
 from bridge.test_bridge import fixture
 
 
@@ -40,6 +40,19 @@ class ModelV21Tests(unittest.TestCase):
         self.assertEqual({row["modelVersion"] for row in rows},{MODEL_VERSION})
         self.assertTrue(all(row["entryState"]==row["setupMetrics"]["entryState"] for row in rows))
         self.assertLessEqual(sum(row["action"]=="BUY" for row in rows),3)
+
+    def test_precomputed_context_and_factors_preserve_exact_v21_output(self):
+        universe=[fixture(f"C{index}",.1+index*.01) for index in range(8)]
+        benchmark=fixture("BENCHMARK",.08)
+        expected_context=build_market_context(universe,benchmark)
+        expected=rank_snapshots(universe,market_contexts={"US":expected_context})
+        optimized=copy.deepcopy(universe)
+        for item in optimized: item["_barsValidated"]=True
+        raw={item["instrumentId"]:raw_factors(item) for item in optimized}
+        benchmark_optimized=copy.deepcopy(benchmark); benchmark_optimized["_barsValidated"]=True; benchmark_raw=raw_factors(benchmark_optimized)
+        context=build_market_context(optimized,benchmark_optimized,raw,benchmark_raw)
+        self.assertEqual(context,expected_context)
+        self.assertEqual(rank_snapshots(optimized,market_contexts={"US":context},raw_by_id=raw),expected)
 
 
 if __name__=="__main__":

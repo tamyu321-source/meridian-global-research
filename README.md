@@ -46,6 +46,10 @@ This starter does not use `wrangler.jsonc`.
   zone. Paper SELL remains available.
 - `.github/workflows/provisional-backtest.yml` runs both v2.0 and v2.1 against
   the same public universe and stores setup-level trades and comparison metrics.
+  Each market is an independent checkpoint, at most two markets run in
+  parallel, and the final upload is rejected unless all seven shards exist.
+  History is restored from R2 when available, Yahoo downloads use bounded
+  concurrency, and every stage emits durable log progress.
 
 ## Cloud configuration
 

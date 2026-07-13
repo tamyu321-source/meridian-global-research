@@ -70,6 +70,8 @@ def _winsor_sorted(ordered, value):
 
 
 def _valid_bars(snapshot):
+    if snapshot.get("_barsValidated"):
+        return snapshot.get("bars") or []
     bars = []
     seen = set()
     for raw in snapshot.get("bars") or []:
@@ -176,7 +178,7 @@ def _quality(snapshot, raw):
 
 
 def _trade_plan(snapshot, raw):
-    bars = _valid_bars(snapshot)
+    bars = (snapshot.get("bars") or []) if snapshot.get("_barsValidated") else _valid_bars(snapshot)
     current = number(snapshot.get("price"), bars[-1]["close"] if bars else 0)
     average_range = raw["atr"] or current * .03
     lows = [bar["low"] for bar in bars[-20:] if bar["low"] > 0]
@@ -187,9 +189,10 @@ def _trade_plan(snapshot, raw):
     return {"entryLow": rounded(current - average_range * .35), "entryHigh": rounded(current + average_range * .20), "invalidation": rounded(min(stop, support)), "stop": rounded(stop), "target1": rounded(current + risk * 1.5), "target2": rounded(current + risk * 2.5), "trailingAtr": 2, "rewardRisk": 2.5, "maxWeightPct": 5, "riskBudgetPct": .5}
 
 
-def rank_snapshots(snapshots, allow_buy=True):
+def rank_snapshots(snapshots, allow_buy=True, raw_by_id=None):
     rows = []
-    raw_by_id = {item["instrumentId"]: raw_factors(item) for item in snapshots}
+    if raw_by_id is None:
+        raw_by_id = {item["instrumentId"]: raw_factors(item) for item in snapshots}
     groups = {}
     for item in snapshots:
         groups.setdefault((item["market"], item["assetType"]), []).append(item)

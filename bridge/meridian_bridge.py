@@ -25,11 +25,11 @@ from datetime import datetime, timezone
 
 try:
     from .cache import MarketCache
-    from .model_v21 import BENCHMARK_SYMBOLS, CONFIG, CONFIG_HASH, MODEL_VERSION, build_market_context, model_identity, number, rank_snapshots
+    from .model_v21 import BENCHMARK_SYMBOLS, CONFIG, CONFIG_HASH, MODEL_VERSION, build_market_context, model_identity, number, rank_snapshots, raw_factors
     from .signed_request import signed_json as _signed_json
 except ImportError:
     from cache import MarketCache
-    from model_v21 import BENCHMARK_SYMBOLS, CONFIG, CONFIG_HASH, MODEL_VERSION, build_market_context, model_identity, number, rank_snapshots
+    from model_v21 import BENCHMARK_SYMBOLS, CONFIG, CONFIG_HASH, MODEL_VERSION, build_market_context, model_identity, number, rank_snapshots, raw_factors
     from signed_request import signed_json as _signed_json
 
 MARKETS = ("US", "CN", "HK", "TW", "JP", "KR", "SG")
@@ -361,15 +361,16 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
         enrich_candidate_profiles(client, cache, all_snapshots)
         reporter.report("RUNNING", "SCORING", total_target, total_target, len(all_snapshots), len(errors), scan_id)
         market_contexts = {}
+        raw_by_id = {item["instrumentId"]:raw_factors(item) for item in all_snapshots}
         for market in markets:
             market_pool = [item for item in all_snapshots if item["market"] == market]
             try:
                 benchmark = fetch_benchmark_snapshot(client, market)
-                market_contexts[market] = build_market_context(market_pool, benchmark)
+                market_contexts[market] = build_market_context(market_pool, benchmark, raw_by_id)
             except Exception as exc:
-                market_contexts[market] = build_market_context(market_pool, None)
+                market_contexts[market] = build_market_context(market_pool, None, raw_by_id)
                 errors.append({"market":market,"symbol":BENCHMARK_SYMBOLS[market],"stage":"regime","error":type(exc).__name__})
-        rankings = rank_snapshots(all_snapshots, allow_buy=True, market_contexts=market_contexts); completed = datetime.now(timezone.utc)
+        rankings = rank_snapshots(all_snapshots, allow_buy=True, market_contexts=market_contexts, raw_by_id=raw_by_id); completed = datetime.now(timezone.utc)
         source_conflicts = sum(len(item.get("sourceConflicts") or []) for item in all_snapshots); action_anomalies = sum(len(item.get("corporateActionAnomalies") or []) for item in all_snapshots)
         complete = bool(markets) and all(coverage.get(market, {}).get("qualityGatePassed") for market in markets) and action_anomalies == 0
         status = "complete" if complete else "partial"

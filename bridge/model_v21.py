@@ -63,6 +63,8 @@ def _winsor_sorted(ordered, value):
 
 
 def _valid_bars(snapshot):
+    if snapshot.get("_barsValidated"):
+        return snapshot.get("bars") or []
     bars, seen = [], set()
     for raw in snapshot.get("bars") or []:
         stamp, close = int(number(raw.get("timestamp"))), number(raw.get("close"))
@@ -128,11 +130,11 @@ def raw_factors(snapshot):
     return {"trend":trend,"momentum":momentum,"relativeStrength":return3,"liquidity":liquidity,"risk":risk,"current":current,"sma20":sma20,"sma50":sma50,"sma200":sma200,"sma50Rising":sma50>sma50_prior,"sma200Rising":sma200>sma200_prior,"return1m":return1,"return3m":return3,"return6m":return6,"return20Current":pct(current,adjusted[-21]) if len(adjusted)>21 else 0,"latestVolume":volumes[-1] if volumes else 0,"medianVolume20":median20,"volumeRatio":volume_ratio,"atr":atr,"atrPct":atr_pct,"volatility":volatility,"downside":downside,"maximumDrawdown252Pct":maximum_drawdown,"barCount":len(bars),"realOhlcv":sum(1 for bar in bars[-60:] if bar["high"]>bar["low"] and bar["volume"]>0)>=min(40,len(bars[-60:])),"previous55High":previous55,"high252":high252,"high5y":high5y,"distance52WeekHighPct":pct(current,high252),"distance5YearHighPct":pct(current,high5y),"extensionAtr":extension_atr,"closeLocation":close_location,"gapAtr":gap_atr,"rangeAtr":range_atr,"recentBreakoutLevel":recent_breakout_level,"recentBreakoutAge":recent_breakout_age,"shockAge":shock_age,"drawdown20Pct":drawdown20,"previousClose":previous_close,"swingLow10":min((bar["low"] for bar in bars[-10:]),default=current),"structure":number((snapshot.get("etfStructure") or {}).get("score"),50)}
 
 
-def build_market_context(snapshots, benchmark_snapshot=None):
+def build_market_context(snapshots, benchmark_snapshot=None, raw_by_id=None, benchmark_raw=None):
     if not snapshots or not benchmark_snapshot: return {"available":False,"regime":"UNKNOWN","breadthPct":0,"benchmarkSymbol":None,"benchmarkReturn3m":0,"benchmarkReturn6m":0}
-    benchmark=raw_factors(benchmark_snapshot)
+    benchmark=benchmark_raw if benchmark_raw is not None else raw_factors(benchmark_snapshot)
     if benchmark["barCount"]<CONFIG["minimumTradingDays"]: return {"available":False,"regime":"UNKNOWN","breadthPct":0,"benchmarkSymbol":benchmark_snapshot.get("symbol"),"benchmarkReturn3m":0,"benchmarkReturn6m":0}
-    raw=[raw_factors(item) for item in snapshots]; breadth=sum(item["current"]>item["sma50"] for item in raw)/max(1,len(raw))*100
+    raw=[raw_by_id[item["instrumentId"]] if raw_by_id is not None else raw_factors(item) for item in snapshots]; breadth=sum(item["current"]>item["sma50"] for item in raw)/max(1,len(raw))*100
     crash=benchmark["return20Current"]<=-8 and benchmark["volatility"]>=30
     risk_off=(benchmark["current"]<benchmark["sma200"] and breadth<40) or crash
     risk_on=benchmark["current"]>benchmark["sma200"] and benchmark["sma50"]>benchmark["sma200"] and breadth>=50 and not crash
@@ -175,8 +177,10 @@ def _trade_plan(snapshot,raw,entry_state,context):
     return {"entryLow":rounded(current-atr*.35),"entryHigh":rounded(current+atr*.20),"invalidation":rounded(min(raw["swingLow10"],raw["recentBreakoutLevel"] or raw["swingLow10"])),"stop":rounded(stop),"target1":rounded(current+risk*1.5),"target2":rounded(current+risk*2.5),"trailingAtr":2,"rewardRisk":2.5,"rewardRiskKind":"PLANNED_R_MULTIPLE","maxWeightPct":max_weight,"riskBudgetPct":.5,"setupType":entry_state,"breakoutLevel":rounded(raw["recentBreakoutLevel"] or raw["previous55High"]),"stopDistancePct":round(risk/current*100,2) if current else 0}
 
 
-def rank_snapshots(snapshots,allow_buy=True,market_contexts=None):
-    market_contexts=market_contexts or {}; raw_by_id={item["instrumentId"]:raw_factors(item) for item in snapshots}; groups={}
+def rank_snapshots(snapshots,allow_buy=True,market_contexts=None,raw_by_id=None):
+    market_contexts=market_contexts or {}
+    if raw_by_id is None: raw_by_id={item["instrumentId"]:raw_factors(item) for item in snapshots}
+    groups={}
     for item in snapshots: groups.setdefault((item["market"],item["assetType"]),[]).append(item)
     def category(item): return (item.get("etfStructure") or {}).get("trackingCategory") if item["assetType"]=="ETF" else item.get("sector")
     peer_key_by_id={}; peer_groups={}

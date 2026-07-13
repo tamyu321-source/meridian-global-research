@@ -47,4 +47,9 @@ py bridge\meridian_bridge.py --loop
 GitHub Actions is the production scheduler. Windows Task Scheduler is optional
 and uses the same HMAC ingestion path and canonical model.
 
-Run `py bridge\backtest.py` for the same-model walk-forward test. Public-source history has survivorship bias, so its status is permanently `PROVISIONAL_BACKTEST` and can never unlock `FORMAL`.
+Run `py bridge\backtest.py` for the same-model walk-forward test. The cloud
+workflow shards by market, evaluates the locked final 504 sessions with five
+years of warm-up history, saves every market as an artifact, then aggregates
+and uploads only a complete seven-market result. Use `--no-upload` for a pilot.
+Public-source history has survivorship bias, so its status is permanently
+`PROVISIONAL_BACKTEST` and can never unlock `FORMAL`.
