@@ -27,5 +27,7 @@ test("all supported locales expose core portfolio copy", () => {
     assert.notEqual(tx(locale,"maxPosition"), "");
     assert.notEqual(tx(locale,"marketRules"), "");
     assert.notEqual(tx(locale,"orderHistory"), "");
+    assert.notEqual(tx(locale,"refreshQuotes"), "");
+    assert.match(tx(locale,"refreshComplete",{updated:12,failed:0}), /12/);
   }
 });

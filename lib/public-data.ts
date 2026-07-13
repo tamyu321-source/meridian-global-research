@@ -189,6 +189,79 @@ export async function fetchSymbolSnapshot(symbol: string, market: MarketCode, na
   return fetchSnapshot({ symbol, shortName: name, quoteType: assetType === "ETF" ? "ETF" : "EQUITY", discoverySource: "market-fallback" }, market);
 }
 
+export type QuoteRefreshInstrument = {
+  instrumentId: string;
+  symbol: string;
+};
+
+export type RefreshedQuote = {
+  instrumentId: string;
+  symbol: string;
+  price: number;
+  previousClose: number;
+  source: string;
+  freshness: "delayed";
+  capturedAt: string;
+  marketTimestamp: string | null;
+};
+
+type YahooSparkPayload = {
+  spark?: {
+    result?: Array<{
+      symbol?: string;
+      response?: Array<{
+        meta?: {
+          regularMarketPrice?: number;
+          chartPreviousClose?: number;
+          previousClose?: number;
+          regularMarketTime?: number;
+        };
+        indicators?: { quote?: Array<{ close?: Array<number | null> }> };
+      }>;
+    }>;
+    error?: unknown;
+  };
+};
+
+/** Normalize Yahoo's multi-symbol public quote response without trusting response order. */
+export function normalizeSparkQuotes(payload: YahooSparkPayload, instruments: QuoteRefreshInstrument[], capturedAt = new Date().toISOString()) {
+  const bySymbol = new Map(instruments.map((item) => [cleanSymbol(item.symbol), item]));
+  const quotes: RefreshedQuote[] = [];
+  for (const result of payload.spark?.result ?? []) {
+    const symbol = cleanSymbol(String(result.symbol ?? ""));
+    const instrument = bySymbol.get(symbol);
+    const response = result.response?.[0];
+    const meta = response?.meta;
+    const price = Number(meta?.regularMarketPrice ?? 0);
+    const closes = (response?.indicators?.quote?.[0]?.close ?? []).filter((value): value is number => Number.isFinite(value) && Number(value) > 0);
+    const previousClose = Number(closes.length > 1 ? closes.at(-2) : meta?.previousClose ?? meta?.chartPreviousClose ?? price);
+    if (!instrument || !Number.isFinite(price) || price <= 0 || !Number.isFinite(previousClose) || previousClose <= 0) continue;
+    quotes.push({
+      instrumentId: instrument.instrumentId,
+      symbol,
+      price,
+      previousClose,
+      source: "Yahoo Finance public multi-symbol quote",
+      freshness: "delayed",
+      capturedAt,
+      marketTimestamp: meta?.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : null,
+    });
+    bySymbol.delete(symbol);
+  }
+  return { quotes, missing: [...bySymbol.values()] };
+}
+
+/** Fetch a fresh public quote snapshot for a server-side scan batch. */
+export async function fetchLatestQuoteBatch(instruments: QuoteRefreshInstrument[]) {
+  if (instruments.length === 0) return { quotes: [] as RefreshedQuote[], missing: [] as QuoteRefreshInstrument[] };
+  if (instruments.length > 50) throw new Error("Quote refresh batch exceeds 50 symbols");
+  const symbols = instruments.map((item) => cleanSymbol(item.symbol)).join(",");
+  const url = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(symbols)}&range=5d&interval=1d`;
+  const payload = await jsonFetch<YahooSparkPayload>(url, 12_000);
+  if (payload.spark?.error) throw new Error("Yahoo public quote refresh failed");
+  return normalizeSparkQuotes(payload, instruments);
+}
+
 export async function scanPublicMarkets(markets: MarketCode[], countPerMarket = 8, assetType: AssetType | "ALL" = "ALL") {
   const discovered = await Promise.allSettled(markets.map(async (market) => ({ market, candidates: await discoverMarket(market, countPerMarket, assetType) })));
   const candidates = discovered.flatMap((result) => result.status === "fulfilled" ? result.value.candidates.map((candidate) => ({ market: result.value.market, candidate })) : []);

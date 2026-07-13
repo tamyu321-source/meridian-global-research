@@ -5,6 +5,7 @@ type Params = Record<string, string | number | null | undefined>;
 const en = {
   language:"Language", mainNavigation:"Main navigation", researchDesk:"Research desk", model:"Model", holdingPeriod:"2–12 week swing", dataStatus:"Data status",
   dashboard:"Overview", scanner:"Market scanner", signals:"Signals", security:"Security research",
+  refreshQuotes:"Refresh market quotes", refreshingQuotes:"Refreshing quotes {processed}/{total}", refreshComplete:"Updated {updated} quotes directly from the public market source ({failed} failed); model scores remain from the latest full analysis.", refreshFailed:"The server could not refresh public market quotes.",
   fullScan:"Full scan", discovered:"Discovered", analyzed:"Analyzed", failed:"Failed", fallback:"Fallback", running:"Running", universeTarget:"500 stocks + 100 ETFs per market",
   shadowBuy:"Shadow buy", watch:"Watch", hardGated:"Hard gated", ibkrFeed:"IBKR feed", off:"Off", ranked:"ranked", limited:"limited",
   stock:"Stock", etf:"ETF", buy:"Buy", hold:"Hold", reduce:"Reduce", exit:"Exit", shadow:"Shadow", formal:"Formal",
@@ -27,6 +28,7 @@ type CopyKey = keyof typeof en;
 const zhCN: Record<CopyKey,string> = {
   language:"语言",mainNavigation:"主导航",researchDesk:"研究工作台",model:"模型",holdingPeriod:"2–12 周波段",dataStatus:"数据状态",
   dashboard:"总览",scanner:"市场扫描",signals:"信号中心",security:"证券研究",
+  refreshQuotes:"重新扫描行情",refreshingQuotes:"正在刷新行情 {processed}/{total}",refreshComplete:"已从公开市场来源直接更新 {updated} 条行情（{failed} 条失败）；模型分数仍来自最近一次完整分析。",refreshFailed:"服务器未能刷新公开市场行情。",
   fullScan:"全市场扫描",discovered:"发现标的",analyzed:"完成分析",failed:"分析失败",fallback:"备用来源",running:"运行中",universeTarget:"每个市场 500 只股票 + 100 只 ETF",
   shadowBuy:"影子买入",watch:"观察",hardGated:"风险门槛阻止",ibkrFeed:"IBKR 行情",off:"未启用",ranked:"只已排名",limited:"有限样本",
   stock:"股票",etf:"ETF",buy:"买入",hold:"持有",reduce:"减仓",exit:"退出",shadow:"影子",formal:"正式",
@@ -47,6 +49,7 @@ const zhCN: Record<CopyKey,string> = {
 const zhTW: Record<CopyKey,string> = {
   ...zhCN,
   language:"語言",mainNavigation:"主導覽",researchDesk:"研究工作台",dataStatus:"資料狀態",scanner:"市場掃描",signals:"訊號中心",security:"證券研究",
+  refreshQuotes:"重新掃描行情",refreshingQuotes:"正在更新行情 {processed}/{total}",refreshComplete:"已直接從公開市場來源更新 {updated} 筆行情（{failed} 筆失敗）；模型分數仍沿用最近一次完整分析。",refreshFailed:"伺服器未能更新公開市場行情。",
   fullScan:"全市場掃描",discovered:"發現標的",analyzed:"完成分析",failed:"分析失敗",fallback:"備用來源",running:"執行中",universeTarget:"每個市場 500 檔股票 + 100 檔 ETF",
   shadowBuy:"影子買進",watch:"觀察",hardGated:"風險門檻阻擋",ibkrFeed:"IBKR 行情",off:"未啟用",ranked:"檔已排名",limited:"有限樣本",
   stock:"股票",buy:"買進",hold:"持有",reduce:"減碼",exit:"退出",formal:"正式",realtime:"即時",delayed:"延遲",fallbackData:"備用來源",stale:"過期",
@@ -66,6 +69,7 @@ const zhTW: Record<CopyKey,string> = {
 const ja: Record<CopyKey,string> = {
   ...en,
   language:"言語",mainNavigation:"メインナビゲーション",researchDesk:"リサーチデスク",model:"モデル",holdingPeriod:"2～12週間のスイング",dataStatus:"データ状態",dashboard:"概要",scanner:"市場スキャン",signals:"シグナル",security:"銘柄リサーチ",
+  refreshQuotes:"市場価格を再取得",refreshingQuotes:"価格を更新中 {processed}/{total}",refreshComplete:"公開市場ソースから {updated} 件を更新しました（{failed} 件失敗）。モデルスコアは直近の完全分析を維持します。",refreshFailed:"サーバーで公開市場価格を更新できませんでした。",
   fullScan:"全市場スキャン",discovered:"検出",analyzed:"分析済み",failed:"失敗",fallback:"代替ソース",running:"実行中",universeTarget:"市場ごとに株式500銘柄＋ETF100銘柄",shadowBuy:"シャドー買い",watch:"監視",hardGated:"リスク制限",ibkrFeed:"IBKRデータ",off:"未設定",ranked:"件を順位付け",limited:"限定データ",
   stock:"株式",buy:"買い",hold:"保有",reduce:"縮小",exit:"手仕舞い",shadow:"シャドー",formal:"正式",realtime:"リアルタイム",delayed:"遅延",fallbackData:"代替",stale:"期限切れ",
   trendConfirmed:"トレンド確認",trendUnconfirmed:"トレンド未確認",momentumLeadership:"モメンタム優位",momentumMixed:"モメンタム混在",riskControlled:"リスク管理良好",volatilityElevated:"ボラティリティ上昇",liquidityAcceptable:"流動性良好",liquidityThin:"流動性不足",formalGateActive:"正式ゲート有効",ibkrNotConnected:"IBKR未接続",insufficientHistory:"履歴不足",staleData:"データ期限切れ",sourceWarning:"データソース警告",invalidPrice:"価格無効",
@@ -82,6 +86,7 @@ const ja: Record<CopyKey,string> = {
 const ko: Record<CopyKey,string> = {
   ...en,
   language:"언어",mainNavigation:"주 탐색",researchDesk:"리서치 데스크",model:"모델",holdingPeriod:"2~12주 스윙",dataStatus:"데이터 상태",dashboard:"개요",scanner:"시장 스캔",signals:"신호",security:"종목 리서치",
+  refreshQuotes:"시장 시세 다시 스캔",refreshingQuotes:"시세 업데이트 중 {processed}/{total}",refreshComplete:"공개 시장 소스에서 시세 {updated}건을 업데이트했습니다({failed}건 실패). 모델 점수는 최근 전체 분석을 유지합니다.",refreshFailed:"서버가 공개 시장 시세를 업데이트하지 못했습니다.",
   fullScan:"전체 시장 스캔",discovered:"발견",analyzed:"분석 완료",failed:"실패",fallback:"대체 소스",running:"실행 중",universeTarget:"시장별 주식 500개 + ETF 100개",shadowBuy:"섀도 매수",watch:"관찰",hardGated:"위험 제한",ibkrFeed:"IBKR 시세",off:"비활성",ranked:"개 순위",limited:"제한 데이터",
   stock:"주식",buy:"매수",hold:"보유",reduce:"축소",exit:"청산",shadow:"섀도",formal:"정식",realtime:"실시간",delayed:"지연",fallbackData:"대체",stale:"만료",
   trendConfirmed:"추세 확인",trendUnconfirmed:"추세 미확인",momentumLeadership:"모멘텀 우위",momentumMixed:"모멘텀 혼조",riskControlled:"위험 통제",volatilityElevated:"변동성 상승",liquidityAcceptable:"유동성 양호",liquidityThin:"유동성 부족",formalGateActive:"정식 기준 활성",ibkrNotConnected:"IBKR 미연결",insufficientHistory:"이력 부족",staleData:"데이터 만료",sourceWarning:"데이터 소스 경고",invalidPrice:"가격 오류",

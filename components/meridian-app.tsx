@@ -10,6 +10,7 @@ export type AppView = "dashboard" | "scanner" | "signals" | "portfolio" | "backt
 type ScanMeta = { id:string; status:string; completedAt:string|null; discoveredCount:number; analyzedCount:number; failedCount:number; fallbackCount:number; targetStocksPerMarket:number; targetEtfsPerMarket:number; coverage:Record<string,unknown>; qualityGatePassed?:boolean; sourceConflicts?:number; corporateActionAnomalies?:number; configHash?:string };
 type RankingPayload = { rankings: RankedSecurity[]; meta: { mode: string; primaryFeed: string; discovery?:string; ibkrConnected: boolean; generatedAt: string; errors?: string[]; scan?:ScanMeta|null } };
 type ApiErrorPayload = { error?:string; errorCode?:string; errorParams?:Record<string,string|number> };
+type QuoteRefreshPayload = { scanId:string; total:number; processed:number; updated:number; failed:number; nextCursor:string|null; done:boolean; capturedAt:string };
 
 const words = {
   "zh-TW": { nav:["總覽","市場掃描","訊號中心","模擬組合","回測驗證","資料健康","設定"], shadow:"影子 BUY", public:"公開來源／延遲／暫定回測", title:"跨市場投資研究", subtitle:"v2 以真實五年量價、股票／ETF 分離模型與嚴格門檻排名；允許沒有 BUY。", scan:"重新掃描", loading:"正在向市場來源取得資料…", noData:"目前沒有可驗證資料。請稍後重試或檢查資料健康度。", market:"市場", asset:"資產", risk:"風險計畫", all:"全部", stocks:"普通股", etfs:"ETF", score:"分數", signal:"訊號", price:"價格", freshness:"資料", factors:"模型因子拆解", plan:"完整交易計畫", entry:"進場區", stop:"停損", targets:"分批目標", maxWeight:"最大倉位", reason:"判斷依據", blocked:"降為觀察", paperBuy:"模擬買進", qty:"數量", setup:"請先在設定頁輸入模擬資金。", health:"七市場資料健康", ibkr:"只使用公開資料", backtest:"暫定回測與驗證門檻", portfolio:"模擬投資組合", settings:"研究設定", save:"儲存設定", notify:"測試通知", quality:"資料完整度", sources:"來源數", bucket:"桶內排名", provisional:"公開資料回測含幸存者偏差，永遠不能解鎖 FORMAL。", disclaimer:"本系統為研究與模擬決策工具，不保證獲利；公開資料只產生影子 BUY，暫定回測不能升級正式訊號。" },
@@ -31,6 +32,9 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
   const [payload, setPayload] = useState<RankingPayload | null>(null);
   const [selected, setSelected] = useState<RankedSecurity | null>(null);
   const [loading, setLoading] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState({ processed:0, total:0, updated:0, failed:0 });
+  const [scanMessage, setScanMessage] = useState("");
   const [error, setError] = useState("");
   const [quantity, setQuantity] = useState(1);
   const t = words[locale];
@@ -52,6 +56,25 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
     } catch (caught) { setPayload(null); setSelected(null); setError(caught instanceof Error ? caught.message : x("errorGeneric")); }
     finally { setLoading(false); }
   }, [market, assetType, riskPlan, locale, x]);
+
+  const refreshMarketQuotes = useCallback(async () => {
+    setScanning(true); setError(""); setScanMessage("");
+    let cursor = "", scanId = "", processed = 0, updated = 0, failed = 0, total = 0;
+    try {
+      for (let batch = 0; batch < 500; batch += 1) {
+        const response = await fetch("/api/scans/refresh", { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ market, assetType, cursor, scanId }) });
+        const result = await response.json() as QuoteRefreshPayload & ApiErrorPayload;
+        if (!response.ok) throw new Error(result.error ?? x("refreshFailed"));
+        scanId = result.scanId; total = result.total; processed += result.processed; updated += result.updated; failed += result.failed;
+        setScanProgress({ processed, total, updated, failed });
+        if (result.done || !result.nextCursor) break;
+        cursor = result.nextCursor;
+      }
+      setScanMessage(x("refreshComplete", { updated, failed }));
+      await loadRankings();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : x("refreshFailed")); }
+    finally { setScanning(false); }
+  }, [market, assetType, loadRankings, x]);
 
   // The current filters drive a server refresh rather than derived local state.
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -91,7 +114,8 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
       </aside>
       <main className="workspace">
         {(["dashboard", "scanner", "signals", "security"] as AppView[]).includes(view) && <>
-          <section className="workspace-title"><div><p>MERIDIAN / {x(view === "dashboard" ? "dashboard" : view === "scanner" ? "scanner" : view === "signals" ? "signals" : "security")}</p><h1>{view === "security" ? selectedRank?.name ?? t.title : t.title}</h1><span>{t.subtitle}</span></div><button className="scan-button" onClick={loadRankings} disabled={loading}>{loading ? "…" : "↻"} {t.scan}</button></section>
+          <section className="workspace-title"><div><p>MERIDIAN / {x(view === "dashboard" ? "dashboard" : view === "scanner" ? "scanner" : view === "signals" ? "signals" : "security")}</p><h1>{view === "security" ? selectedRank?.name ?? t.title : t.title}</h1><span>{t.subtitle}</span></div><button className="scan-button" onClick={() => void refreshMarketQuotes()} disabled={loading || scanning}>{scanning ? "…" : "↻"} {scanning ? x("refreshingQuotes", { processed:scanProgress.processed, total:scanProgress.total || "—" }) : x("refreshQuotes")}</button></section>
+          {(scanMessage || scanning) && <div className="scan-refresh-status" role="status">{scanning ? x("refreshingQuotes", { processed:scanProgress.processed, total:scanProgress.total || "—" }) : scanMessage}{scanning && scanProgress.failed > 0 ? ` · ${x("failed")}: ${scanProgress.failed}` : ""}</div>}
           {view !== "security" && <section className="control-deck">
             <Control label={t.market}><button className={market === "ALL" ? "active" : ""} onClick={() => setMarket("ALL")}>{t.all}</button>{MARKETS.map((item) => <button key={item} className={market === item ? "active" : ""} onClick={() => setMarket(item)}>{item}</button>)}</Control>
             <Control label={t.asset}><button className={assetType === "ALL" ? "active" : ""} onClick={() => setAssetType("ALL")}>{t.all}</button><button className={assetType === "STOCK" ? "active" : ""} onClick={() => setAssetType("STOCK")}>{t.stocks}</button><button className={assetType === "ETF" ? "active" : ""} onClick={() => setAssetType("ETF")}>{t.etfs}</button></Control>
