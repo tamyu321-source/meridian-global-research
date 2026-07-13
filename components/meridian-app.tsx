@@ -3,12 +3,12 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiErrorText, codeText, riskPlanName, tx } from "@/lib/i18n";
-import type { Locale, RankedSecurity, RiskPlanId } from "@/lib/types";
-import { MARKETS, MODEL_VERSION, RISK_PLANS } from "@/lib/types";
+import type { Locale, PriceBar, RankedSecurity, RiskPlanId } from "@/lib/types";
+import { ACTIVE_MODEL_VERSION, CANDIDATE_MODEL_VERSION, MARKETS, RISK_PLANS } from "@/lib/types";
 
 export type AppView = "dashboard" | "scanner" | "signals" | "portfolio" | "backtests" | "health" | "settings" | "security";
 type ScanMeta = { id:string; status:string; completedAt:string|null; discoveredCount:number; analyzedCount:number; failedCount:number; fallbackCount:number; targetStocksPerMarket:number; targetEtfsPerMarket:number; coverage:Record<string,unknown>; qualityGatePassed?:boolean; sourceConflicts?:number; corporateActionAnomalies?:number; configHash?:string };
-type RankingPayload = { rankings: RankedSecurity[]; meta: { mode: string; primaryFeed: string; discovery?:string; ibkrConnected: boolean; generatedAt: string; errors?: string[]; scan?:ScanMeta|null } };
+type RankingPayload = { rankings: RankedSecurity[]; meta: { mode: string; primaryFeed: string; discovery?:string; ibkrConnected: boolean; generatedAt: string; errors?: string[]; scan?:ScanMeta|null; modelVersion?:string } };
 type ApiErrorPayload = { error?:string; errorCode?:string; errorParams?:Record<string,string|number> };
 type QuoteRefreshPayload = { scanId:string; total:number; processed:number; updated:number; failed:number; nextCursor:string|null; done:boolean; capturedAt:string };
 type AnalysisComponentPayload = { id:string; market:string; assetType:string; status:string; phase:string; total:number; processed:number; updated:number; failed:number; heartbeatAt:string|null; errorCode:string|null; errorDetail:string|null };
@@ -31,8 +31,10 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
   const [market, setMarket] = useState("ALL");
   const [assetType, setAssetType] = useState("ALL");
   const [riskPlan, setRiskPlan] = useState<RiskPlanId>("capital_first");
+  const [modelVersion, setModelVersion] = useState(ACTIVE_MODEL_VERSION);
   const [payload, setPayload] = useState<RankingPayload | null>(null);
   const [selected, setSelected] = useState<RankedSecurity | null>(null);
+  const [securityBars, setSecurityBars] = useState<PriceBar[]>([]);
   const [loading, setLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState({ processed:0, total:0, updated:0, failed:0 });
@@ -55,13 +57,13 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
   const loadRankings = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const response = await fetch(`/api/rankings?market=${market}&assetType=${assetType}&riskPlan=${riskPlan}`, { cache: "no-store" });
+      const response = await fetch(`/api/rankings?market=${market}&assetType=${assetType}&riskPlan=${riskPlan}&modelVersion=${encodeURIComponent(modelVersion)}`, { cache: "no-store" });
       const next = await response.json() as RankingPayload & ApiErrorPayload;
       if (!response.ok) throw new Error(apiErrorText(locale,next));
       setPayload(next); setSelected((current) => next.rankings.find((item) => item.instrumentId === current?.instrumentId) ?? next.rankings[0] ?? null);
     } catch (caught) { setPayload(null); setSelected(null); setError(caught instanceof Error ? caught.message : x("errorGeneric")); }
     finally { setLoading(false); }
-  }, [market, assetType, riskPlan, locale, x]);
+  }, [market, assetType, riskPlan, modelVersion, locale, x]);
 
   const refreshMarketQuotes = useCallback(async () => {
     setScanning(true); setError(""); setScanMessage("");
@@ -120,7 +122,7 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
       void loadAnalysisJob(analysisJob.jobId).then((next) => {
         if (!next || ["QUEUED", "DISPATCHED", "RUNNING"].includes(next.status)) return;
         setAnalysisMessage(next.status === "COMPLETE" ? x("analysisComplete") : next.status === "PARTIAL" ? x("analysisPartial") : x("analysisFailed"));
-        void loadRankings();
+        setModelVersion(CANDIDATE_MODEL_VERSION);
       }).catch(() => undefined);
     }, 8000);
     return () => window.clearInterval(timer);
@@ -129,12 +131,21 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
     if (view !== "security" || !instrumentId) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    fetch(`/api/securities/${encodeURIComponent(instrumentId)}?riskPlan=${riskPlan}`, { cache: "no-store" }).then(async (response) => {
-      const result = await response.json() as { security?: RankedSecurity } & ApiErrorPayload;
+    fetch(`/api/securities/${encodeURIComponent(instrumentId)}?riskPlan=${riskPlan}&modelVersion=${encodeURIComponent(modelVersion)}`, { cache: "no-store" }).then(async (response) => {
+      const result = await response.json() as { security?: RankedSecurity; bars?:PriceBar[] } & ApiErrorPayload;
       if (!response.ok || !result.security) throw new Error(apiErrorText(locale,result));
-      setSelected(result.security);
+      setSelected(result.security); setSecurityBars(result.bars ?? []);
     }).catch((caught) => setError(caught instanceof Error ? caught.message : x("errorGeneric"))).finally(() => setLoading(false));
-  }, [view, instrumentId, riskPlan, locale, x]);
+  }, [view, instrumentId, riskPlan, modelVersion, locale, x]);
+
+  useEffect(() => {
+    if (view === "security" || !selected?.instrumentId) return;
+    const controller = new AbortController();
+    fetch(`/api/securities/${encodeURIComponent(selected.instrumentId)}?riskPlan=${riskPlan}&modelVersion=${encodeURIComponent(modelVersion)}`, { cache:"no-store", signal:controller.signal })
+      .then(async response => response.ok ? await response.json() as { bars?:PriceBar[] } : { bars:[] })
+      .then(result => setSecurityBars(result.bars ?? [])).catch(() => undefined);
+    return () => controller.abort();
+  }, [view, selected?.instrumentId, riskPlan, modelVersion]);
 
   const selectedRank = selected;
   const summary = useMemo(() => ({ buy: payload?.rankings.filter((item) => item.action === "BUY").length ?? 0, watch: payload?.rankings.filter((item) => item.action === "WATCH").length ?? 0, blocked: payload?.rankings.filter((item) => item.hardGates.length > 0).length ?? 0 }), [payload]);
@@ -156,7 +167,7 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
       <aside className="side-nav" aria-label={x("mainNavigation")}>
         <div className="side-caption">{x("researchDesk")}</div>
         {t.nav.map((label, index) => <Link key={label} className={(view === ["dashboard","scanner","signals","portfolio","backtests","health","settings"][index]) ? "active" : ""} href={navHref[index]}><span>{String(index + 1).padStart(2,"0")}</span>{label}</Link>)}
-        <div className="model-stamp"><span>{x("model")}</span><strong>{MODEL_VERSION}</strong><small>{x("holdingPeriod")}</small></div>
+        <div className="model-stamp"><span>{x("model")}</span><strong>{modelVersion}</strong><small>{x("holdingPeriod")}</small></div>
       </aside>
       <main className="workspace">
         {(["dashboard", "scanner", "signals", "security"] as AppView[]).includes(view) && <>
@@ -168,7 +179,9 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
             <Control label={t.market}><button className={market === "ALL" ? "active" : ""} onClick={() => setMarket("ALL")}>{t.all}</button>{MARKETS.map((item) => <button key={item} className={market === item ? "active" : ""} onClick={() => setMarket(item)}>{item}</button>)}</Control>
             <Control label={t.asset}><button className={assetType === "ALL" ? "active" : ""} onClick={() => setAssetType("ALL")}>{t.all}</button><button className={assetType === "STOCK" ? "active" : ""} onClick={() => setAssetType("STOCK")}>{t.stocks}</button><button className={assetType === "ETF" ? "active" : ""} onClick={() => setAssetType("ETF")}>{t.etfs}</button></Control>
             <Control label={t.risk}>{(Object.keys(RISK_PLANS) as RiskPlanId[]).map((item) => <button key={item} className={riskPlan === item ? "active" : ""} onClick={() => setRiskPlan(item)} title={`${tx(locale,"singleTradeRisk")} ${RISK_PLANS[item].riskBudgetPct}% · ${tx(locale,"maxPosition")} ${RISK_PLANS[item].maxWeightPct}%`}>{riskPlanName(locale,item)} · {RISK_PLANS[item].maxWeightPct}%</button>)}</Control>
+            <Control label={x("modelTrack")}><button className={modelVersion === ACTIVE_MODEL_VERSION ? "active" : ""} onClick={() => setModelVersion(ACTIVE_MODEL_VERSION)}>{x("activeModel")}</button><button className={modelVersion === CANDIDATE_MODEL_VERSION ? "active" : ""} onClick={() => setModelVersion(CANDIDATE_MODEL_VERSION)}>{x("candidateModel")}</button></Control>
           </section>}
+          {view !== "security" && modelVersion === CANDIDATE_MODEL_VERSION && <div className="candidate-lock-banner">{x("candidateLocked")}</div>}
           {view !== "security" && payload?.meta.scan && <section className="scan-audit-strip" aria-label={x("fullScan")}>
             <div><span>{x("fullScan")}</span><strong>{codeText(locale,payload.meta.scan.status)}</strong></div>
             <div><span>{x("discovered")}</span><strong>{payload.meta.scan.discoveredCount.toLocaleString(locale)}</strong></div>
@@ -184,11 +197,11 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
             <div className="ranking-panel"><div className="panel-title"><strong>{payload?.rankings.length ?? 0} {x("ranked")} · {payload?.meta.scan?.analyzedCount?.toLocaleString(locale) ?? x("limited")} {x("analyzed")}</strong><span>{payload?.meta.generatedAt ? new Date(payload.meta.generatedAt).toLocaleString(locale) : "—"}</span></div>
               {payload?.rankings.length ? <div className="ranking-list">{payload.rankings.map((item, index) => <button key={item.instrumentId} onClick={() => setSelected(item)} className={selectedRank?.instrumentId === item.instrumentId ? "selected" : ""}>
                 <span className="rank-no">{String(index + 1).padStart(2,"0")}</span><span className="ticker"><strong>{item.symbol}</strong><small>{item.name}</small></span><span className="tags"><i>{item.market}</i><i>{codeText(locale,item.assetType)}</i></span><span className={`action action-${item.action.toLowerCase()}`}>{codeText(locale,item.action)}</span><span className="quote"><strong>{item.price.toLocaleString(locale)}</strong><small>{item.changePct >= 0 ? "+" : ""}{item.changePct}%</small></span><span className="score-cell"><strong>{item.score}</strong><i style={{"--score":`${item.score}%`} as React.CSSProperties}/></span>
-              </button>)}</div> : <div className="empty-state">{t.noData}</div>}
+              </button>)}</div> : <div className="empty-state">{modelVersion === CANDIDATE_MODEL_VERSION ? x("candidateAwaiting") : t.noData}</div>}
             </div>
-            {selectedRank && <SecurityPanel security={selectedRank} locale={locale} t={t} quantity={quantity} setQuantity={setQuantity} onPaperBuy={paperBuy}/>} 
+            {selectedRank && <SecurityPanel security={selectedRank} bars={securityBars} locale={locale} t={t} quantity={quantity} setQuantity={setQuantity} onPaperBuy={paperBuy}/>}
           </section>}
-          {!loading && view === "security" && selectedRank && <SecurityPanel security={selectedRank} locale={locale} t={t} quantity={quantity} setQuantity={setQuantity} onPaperBuy={paperBuy} standalone/>}
+          {!loading && view === "security" && selectedRank && <SecurityPanel security={selectedRank} bars={securityBars} locale={locale} t={t} quantity={quantity} setQuantity={setQuantity} onPaperBuy={paperBuy} standalone/>}
         </>}
         {view === "portfolio" && <PortfolioView locale={locale} title={t.portfolio} setup={t.setup}/>} 
         {view === "backtests" && <BacktestView locale={locale} title={t.backtest}/>} 
@@ -229,17 +242,39 @@ function AnalysisConfirmModal({ locale, market, assetType, starting, onCancel, o
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event)=>{if(event.currentTarget===event.target&&!starting)onCancel();}}><section className="analysis-modal" role="dialog" aria-modal="true" aria-labelledby="full-analysis-title"><p>MERIDIAN / {tx(locale,"shadow")}</p><h2 id="full-analysis-title">{tx(locale,"fullAnalysisConfirmTitle")}</h2><div className="modal-warning">{tx(locale,"fullAnalysisConfirmBody")}</div><dl><div><dt>{tx(locale,"analysisScope")}</dt><dd>{scope}</dd></div><div><dt>{tx(locale,"analysisEstimate")}</dt><dd>≈ {estimate.toLocaleString(locale)}</dd></div><div><dt>{tx(locale,"analysisFirstBackfill")}</dt><dd>{tx(locale,"analysisFirstBackfillValue")}</dd></div></dl><div className="modal-actions"><button className="secondary" disabled={starting} onClick={onCancel}>{tx(locale,"cancel")}</button><button disabled={starting} onClick={onStart}>{starting ? tx(locale,"analysisQueued") : tx(locale,"startAnalysis")}</button></div></section></div>;
 }
 
-function SecurityPanel({ security, locale, t, quantity, setQuantity, onPaperBuy, standalone=false }: { security: RankedSecurity; locale: Locale; t: typeof words[Locale]; quantity:number; setQuantity:(value:number)=>void; onPaperBuy:()=>void; standalone?:boolean }) {
+function SecurityPanel({ security, bars, locale, t, quantity, setQuantity, onPaperBuy, standalone=false }: { security: RankedSecurity; bars:PriceBar[]; locale: Locale; t: typeof words[Locale]; quantity:number; setQuantity:(value:number)=>void; onPaperBuy:()=>void; standalone?:boolean }) {
+  const setup=security.setupMetrics;
+  const candidateLocked=security.modelVersion===CANDIDATE_MODEL_VERSION;
   return <aside className={`security-panel ${standalone ? "standalone" : ""}`}>
     <div className="security-head"><div><span>{security.market} · {codeText(locale,security.assetType)} · {security.exchange}</span><h2>{security.name}</h2><p>{security.symbol} / {security.currency}</p></div><div className="score-orbit"><strong>{security.score}</strong><small>{codeText(locale,security.status)}</small></div></div>
     <div className="source-banner"><span className={`freshness freshness-${security.freshness}`}>{codeText(locale,security.freshness)}</span><div><strong>{security.source}</strong><small>{tx(locale,"quoteTime")}: {new Date(security.capturedAt).toLocaleString(locale)} · {security.currency} {security.price.toLocaleString(locale)}</small><small>{tx(locale,"analysisTime")}: {security.analysisCapturedAt ? new Date(security.analysisCapturedAt).toLocaleString(locale) : "—"} · {tx(locale,"analysisPrice")}: {security.analysisPrice ? `${security.currency} ${security.analysisPrice.toLocaleString(locale)}` : "—"}</small></div></div>
     <div className="risk-limit-grid"><div><span>{t.quality}</span><strong>{security.dataQuality?.completenessPct ?? 0}%</strong></div><div><span>{t.sources}</span><strong>{security.dataQuality?.sourceCount ?? 0}</strong></div><div><span>{t.bucket}</span><strong>{security.selection?.bucketRank ?? 0} / {security.selection?.buyLimit ?? 0} BUY</strong></div><div><span>{tx(locale,"model")}</span><strong>{security.assetModel}</strong></div></div>
+    {setup&&<><div className={`entry-state entry-${setup.entryState.toLowerCase()}`}><span>{tx(locale,"entryQuality")}</span><strong>{codeText(locale,setup.entryState)}</strong></div><div className="setup-grid"><div><span>{tx(locale,"high52Distance")}</span><strong>{setup.distance52WeekHighPct.toFixed(2)}%</strong></div><div><span>{tx(locale,"high5yDistance")}</span><strong>{setup.distance5YearHighPct.toFixed(2)}%</strong></div><div><span>{tx(locale,"extensionAtr")}</span><strong>{setup.extensionAtr.toFixed(2)} ATR</strong></div><div><span>{tx(locale,"breakoutLevel")}</span><strong>{setup.breakoutLevel.toLocaleString(locale)}</strong></div><div><span>{tx(locale,"volumeRatio")}</span><strong>{setup.volumeRatio.toFixed(2)}×</strong></div><div><span>{tx(locale,"closeLocation")}</span><strong>{(setup.closeLocation*100).toFixed(0)}%</strong></div><div><span>{tx(locale,"marketRegime")}</span><strong>{codeText(locale,setup.marketRegime)}</strong></div><div><span>{tx(locale,"marketBreadth")}</span><strong>{setup.marketBreadthPct.toFixed(1)}%</strong></div></div></>}
+    {bars.length>0&&<PriceChart bars={bars} security={security} locale={locale}/>}
     <div className="factor-deck"><h3>{t.factors}</h3>{factorKeys.map((key,index)=><div key={key}><span>{factorName[locale][index]}</span><i><b style={{width:`${security.factors[key]}%`}}/></i><strong>{security.factors[key]}</strong></div>)}</div>
-    <div className="trade-plan"><h3>{t.plan}</h3><dl><div><dt>{t.entry}</dt><dd>{security.tradePlan.entryLow}–{security.tradePlan.entryHigh}</dd></div><div><dt>{t.stop}</dt><dd>{security.tradePlan.stop}</dd></div><div><dt>{t.targets}</dt><dd>{security.tradePlan.target1} / {security.tradePlan.target2}</dd></div><div><dt>{t.maxWeight}</dt><dd>{security.tradePlan.maxWeightPct}%</dd></div></dl></div>
+    <div className="trade-plan"><h3>{t.plan}</h3><dl><div><dt>{t.entry}</dt><dd>{security.tradePlan.entryLow}–{security.tradePlan.entryHigh}</dd></div><div><dt>{t.stop}</dt><dd>{security.tradePlan.stop}<small>{security.tradePlan.stopDistancePct ? ` · ${security.tradePlan.stopDistancePct}%` : ""}</small></dd></div><div><dt>{t.targets}</dt><dd>{security.tradePlan.target1} / {security.tradePlan.target2}<small>{security.tradePlan.rewardRiskKind ? ` · ${tx(locale,"plannedR")} 1.5R / 2.5R` : ""}</small></dd></div><div><dt>{t.maxWeight}</dt><dd>{security.tradePlan.maxWeightPct}%</dd></div></dl></div>
     <div className="evidence"><h3>{t.reason}</h3><div>{security.reasonCodes.map((code)=><span key={code}>{codeText(locale,code)}</span>)}</div>{security.hardGates.length>0&&<p><b>!</b>{t.blocked}: {security.hardGates.map((code)=>codeText(locale,code)).join(" · ")}</p>}</div>
     {security.tradePlanState === "REANALYSIS_REQUIRED"&&<div className="reanalysis-warning"><strong>{tx(locale,"reanalysisRequired")}</strong><span>{tx(locale,"reanalysisBuyBlocked")}</span></div>}
-    <div className="paper-action"><label>{t.qty}<input type="number" min="1" step="1" value={quantity} onChange={(event)=>setQuantity(Math.max(1,Number(event.target.value)))}/></label><button onClick={onPaperBuy} disabled={security.tradePlanState === "REANALYSIS_REQUIRED"}>{t.paperBuy}</button></div>
+    {candidateLocked&&<div className="candidate-paper-lock">{tx(locale,"candidatePaperLocked")}</div>}
+    <div className="paper-action"><label>{t.qty}<input type="number" min="1" step="1" value={quantity} onChange={(event)=>setQuantity(Math.max(1,Number(event.target.value)))}/></label><button onClick={onPaperBuy} disabled={candidateLocked || security.action!=="BUY" || security.tradePlanState === "REANALYSIS_REQUIRED"}>{t.paperBuy}</button></div>
   </aside>;
+}
+
+function PriceChart({bars,security,locale}:{bars:PriceBar[];security:RankedSecurity;locale:Locale}) {
+  const chart=useMemo(()=>{
+    const daily=bars.slice(-1260),closes=daily.map(item=>item.adjClose??item.close),average=(end:number,period:number)=>end+1>=period?closes.slice(end-period+1,end+1).reduce((sum,value)=>sum+value,0)/period:null;
+    const weekly=[] as Array<{timestamp:number;open:number;high:number;low:number;close:number;ma20:number|null;ma50:number|null;ma200:number|null}>;
+    for(let start=0;start<daily.length;start+=5){const group=daily.slice(start,start+5),end=start+group.length-1;if(!group.length)continue;weekly.push({timestamp:group[group.length-1].timestamp,open:group[0].open,high:Math.max(...group.map(item=>item.high)),low:Math.min(...group.map(item=>item.low)),close:group[group.length-1].close,ma20:average(end,20),ma50:average(end,50),ma200:average(end,200)});}
+    return weekly;
+  },[bars]);
+  if(chart.length<2)return null;
+  const width=900,height=330,pad={left:48,right:14,top:18,bottom:28},plotW=width-pad.left-pad.right,plotH=height-pad.top-pad.bottom;
+  const levels=[security.tradePlan.entryLow,security.tradePlan.entryHigh,security.tradePlan.stop,security.tradePlan.target1,security.tradePlan.target2,security.setupMetrics?.breakoutLevel??0].filter(value=>value>0);
+  const min=Math.min(...chart.map(item=>item.low),...levels)*.985,max=Math.max(...chart.map(item=>item.high),...levels)*1.015,range=Math.max(.0001,max-min);
+  const x=(index:number)=>pad.left+(index/(chart.length-1))*plotW,y=(value:number)=>pad.top+(max-value)/range*plotH,candle=Math.max(1,Math.min(4,plotW/chart.length*.55));
+  const path=(key:"ma20"|"ma50"|"ma200")=>chart.map((item,index)=>item[key]==null?null:`${index===0||chart[index-1][key]==null?"M":"L"}${x(index).toFixed(1)},${y(Number(item[key])).toFixed(1)}`).filter(Boolean).join(" ");
+  const line=(value:number,color:string,label:string,dash="4 3")=><g key={label}><line x1={pad.left} x2={width-pad.right} y1={y(value)} y2={y(value)} stroke={color} strokeWidth="1" strokeDasharray={dash}/><text x={width-pad.right-3} y={y(value)-3} textAnchor="end" fill={color} fontSize="9">{label} {value.toLocaleString(locale)}</text></g>;
+  return <div className="price-chart"><h3>{tx(locale,"chart5y")}</h3><svg role="img" aria-label={`${security.symbol} ${tx(locale,"chart5y")}`} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none"><rect x={pad.left} y={pad.top} width={plotW} height={plotH} fill="#faf8f2"/>{chart.map((item,index)=>{const up=item.close>=item.open,color=up?"#3d6841":"#b44f3c";return <g key={item.timestamp}><line x1={x(index)} x2={x(index)} y1={y(item.high)} y2={y(item.low)} stroke={color} strokeWidth="1"/><rect x={x(index)-candle/2} y={y(Math.max(item.open,item.close))} width={candle} height={Math.max(1,Math.abs(y(item.open)-y(item.close)))} fill={color}/></g>})}<path d={path("ma20")} fill="none" stroke="#c07a34" strokeWidth="1.4"/><path d={path("ma50")} fill="none" stroke="#3f718d" strokeWidth="1.4"/><path d={path("ma200")} fill="none" stroke="#7b547c" strokeWidth="1.4"/>{security.setupMetrics?.breakoutLevel?line(security.setupMetrics.breakoutLevel,"#6d6a3d","B"):null}{line(security.tradePlan.entryLow,"#3d6841","E")}{line(security.tradePlan.stop,"#b44f3c","S")}{line(security.tradePlan.target1,"#3f718d","T1")}{line(security.tradePlan.target2,"#7b547c","T2")}<text x={pad.left} y={height-8} fontSize="9" fill="#777">{new Date(chart[0].timestamp*1000).toLocaleDateString(locale)}</text><text x={width-pad.right} y={height-8} textAnchor="end" fontSize="9" fill="#777">{new Date(chart[chart.length-1].timestamp*1000).toLocaleDateString(locale)}</text></svg><div className="chart-legend"><span className="ma20">SMA20</span><span className="ma50">SMA50</span><span className="ma200">SMA200</span><span>B · {tx(locale,"breakoutLevel")}</span><span>E/S/T · {tx(locale,"entryQuality")}</span></div></div>;
 }
 
 function PortfolioView({ locale, title, setup }: { locale:Locale; title:string; setup:string }) {
@@ -277,9 +312,9 @@ function PortfolioView({ locale, title, setup }: { locale:Locale; title:string; 
 }
 
 function BacktestView({ locale, title }: { locale:Locale; title:string }) {
-  const [data,setData]=useState<Record<string,unknown>|null>(null); useEffect(()=>{fetch(`/api/backtests/${MODEL_VERSION}`,{cache:"no-store"}).then(async r=>await r.json() as Record<string,unknown>).then(setData);},[]);
+  const [data,setData]=useState<Record<string,unknown>|null>(null); useEffect(()=>{fetch(`/api/backtests/${CANDIDATE_MODEL_VERSION}`,{cache:"no-store"}).then(async r=>await r.json() as Record<string,unknown>).then(setData);},[]);
   const acceptance=data?.acceptance as Record<string,number>|undefined; const markets=data?.markets as Array<Record<string,unknown>>|undefined;
-  return <PageSection title={title} eyebrow={tx(locale,"backtestEyebrow")}><div className="activation-banner"><span>{tx(locale,"formalLocked")}</span><strong>{data?codeText(locale,data.status):tx(locale,"loading")}</strong><p>{tFor(locale).provisional}</p></div>{acceptance&&<section className="metric-grid"><Metric label={tx(locale,"minimumTrades")} value={acceptance.minimumTrades}/><Metric label={tx(locale,"profitFactor")} value={`≥ ${acceptance.profitFactor}`}/><Metric label={tx(locale,"sharpe")} value={`≥ ${acceptance.sharpe}`}/><Metric label={tx(locale,"shadowDays")} value={acceptance.shadowTradingDays}/></section>}<div className="market-health-grid">{markets?.map(row=><div key={String(row.market)}><span>{String(row.market)}</span><strong>{codeText(locale,row.status)}</strong><small>{new Date().toLocaleDateString(locale)}</small></div>)}</div></PageSection>;
+  return <PageSection title={title} eyebrow={tx(locale,"backtestEyebrow")}><div className="activation-banner"><span>{tx(locale,"formalLocked")} · {CANDIDATE_MODEL_VERSION}</span><strong>{data?codeText(locale,data.status):tx(locale,"loading")}</strong><p>{tx(locale,"candidateLocked")} {tFor(locale).provisional}</p></div>{acceptance&&<section className="metric-grid"><Metric label={tx(locale,"minimumTrades")} value={acceptance.minimumTrades}/><Metric label={tx(locale,"profitFactor")} value={`≥ ${acceptance.profitFactor}`}/><Metric label={tx(locale,"sharpe")} value={`≥ ${acceptance.sharpe}`}/><Metric label={tx(locale,"shadowDays")} value={acceptance.shadowTradingDays}/></section>}<div className="market-health-grid">{markets?.map(row=>{const metrics=(row.metrics??{}) as Record<string,unknown>;return <div key={String(row.market)}><span>{String(row.market)}</span><strong>{codeText(locale,row.status)}</strong><small>{metrics.tradeCount!=null?`${tx(locale,"minimumTrades")}: ${String(metrics.tradeCount)} · PF ${String(metrics.profitFactor??"—")} · Sharpe ${String(metrics.sharpe??"—")}`:new Date().toLocaleDateString(locale)}</small></div>})}</div></PageSection>;
 }
 
 function tFor(locale:Locale){ return words[locale]; }

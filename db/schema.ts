@@ -39,6 +39,7 @@ export const signals = sqliteTable("signals", {
   analysisPrice: real("analysis_price"),
   assetModel: text("asset_model").notNull().default("LEGACY_V1"), validationStatus: text("validation_status").notNull().default("SHADOW"),
   configHash: text("config_hash").notNull().default(""), dataQualityJson: text("data_quality_json").notNull().default("{}"), selectionJson: text("selection_json").notNull().default("{}"),
+  setupJson: text("setup_json").notNull().default("{}"),
   createdAt: timestamp("created_at"), updatedAt: timestamp("updated_at"),
 }, (table) => [index("signals_user_idx").on(table.userEmail, table.createdAt), index("signals_instrument_idx").on(table.instrumentId, table.createdAt), index("signals_scan_idx").on(table.scanId, table.score)]);
 

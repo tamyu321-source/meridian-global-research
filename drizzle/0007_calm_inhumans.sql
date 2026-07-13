@@ -1,0 +1,1 @@
+ALTER TABLE `signals` ADD `setup_json` text DEFAULT '{}' NOT NULL;

@@ -49,6 +49,18 @@ test("holding actions and evidence are localized", () => {
   assert.equal(codeText("ko","HOLDING_PLAN_VALID"), "추세와 위험 조건이 유효합니다");
 });
 
+test("v2.1 entry states and model-lock copy are localized", () => {
+  assert.equal(codeText("zh-TW","BREAKOUT_READY"), "高品質放量突破，可以進場");
+  assert.equal(codeText("zh-CN","OVEREXTENDED"), "趋势良好但过度延伸，至少等待三个交易日");
+  assert.match(codeText("ja","BLOCKED_REGIME"), /市場状態/);
+  assert.match(codeText("ko","PULLBACK_READY"), /진입 가능/);
+  for (const locale of ["en","zh-TW","zh-CN","ja","ko"] as const) {
+    assert.notEqual(tx(locale,"candidateLocked"), "");
+    assert.notEqual(tx(locale,"entryQuality"), "");
+    assert.notEqual(tx(locale,"chart5y"), "");
+  }
+});
+
 test("a quote outside the analyzed entry zone has a localized paper-buy error", () => {
   assert.equal(apiErrorText("zh-TW",{errorCode:"PRICE_OUTSIDE_ENTRY_ZONE"}), "最新價格已離開分析進場區，請先執行完整分析再模擬買進。");
   assert.match(apiErrorText("ja",{errorCode:"PRICE_OUTSIDE_ENTRY_ZONE"}), /完全分析/);

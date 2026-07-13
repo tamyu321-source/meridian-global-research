@@ -29,12 +29,23 @@ This starter does not use `wrangler.jsonc`.
 - **Run full analysis** creates durable D1 jobs and dispatches
   `.github/workflows/full-analysis.yml`. The runner restores the last successful
   market/asset Parquet from R2, downloads a seven-day overlap (or the first five
-  years), and invokes `bridge/model_v2.py` through `bridge/meridian_bridge.py`.
+  years), and invokes the reliability-first candidate in `bridge/model_v21.py`
+  through `bridge/meridian_bridge.py`.
+- `meridian-swing-v2.0.0` remains the active paper-trading model. The UI can
+  inspect `meridian-swing-v2.1.0` independently, but v2.1 cannot replace v2.0
+  until its provisional comparison backtest and 30 trading-day shadow
+  validation pass.
+- v2.1 separates research ranking from entry timing. Only a confirmed
+  volume breakout or healthy pullback can be a SHADOW BUY; overextension,
+  shock cooling, missing breadth, neutral breakout attempts and risk-off
+  regimes remain WATCH.
 - Stock and ETF buckets activate independently only after at least 95% of the
   discovered pool is analyzed and no major corporate-action anomaly exists.
 - Public-source output is permanently `SHADOW`; no broker order is submitted.
 - A new paper BUY is blocked when the latest quote has left the original entry
   zone. Paper SELL remains available.
+- `.github/workflows/provisional-backtest.yml` runs both v2.0 and v2.1 against
+  the same public universe and stores setup-level trades and comparison metrics.
 
 ## Cloud configuration
 

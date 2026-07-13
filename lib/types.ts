@@ -5,8 +5,9 @@ export type DataFreshness = "realtime" | "delayed" | "fallback" | "stale";
 export type SignalStatus = "SHADOW" | "FORMAL";
 export type SignalAction = "BUY" | "WATCH" | "HOLD" | "REDUCE" | "EXIT";
 export type RiskPlanId = "capital_first" | "balanced" | "growth";
-export type AssetModel = "STOCK_V2" | "ETF_V2" | "LEGACY_V1";
+export type AssetModel = "STOCK_V2" | "ETF_V2" | "STOCK_V2_1" | "ETF_V2_1" | "LEGACY_V1";
 export type ValidationStatus = "SHADOW" | "PROVISIONAL_BACKTEST" | "FORMAL";
+export type EntryState = "BREAKOUT_READY" | "PULLBACK_READY" | "WAIT_PULLBACK" | "OVEREXTENDED" | "NO_SETUP" | "BLOCKED_REGIME" | "BLOCKED_DATA";
 
 export type PriceBar = {
   timestamp: number;
@@ -68,6 +69,28 @@ export type TradePlan = {
   rewardRisk: number;
   maxWeightPct: number;
   riskBudgetPct: number;
+  rewardRiskKind?: "PLANNED_R_MULTIPLE";
+  setupType?: EntryState;
+  breakoutLevel?: number;
+  stopDistancePct?: number;
+};
+
+export type SetupMetrics = {
+  entryState: EntryState;
+  setupType: "BREAKOUT" | "PULLBACK" | "NONE";
+  distance52WeekHighPct: number;
+  distance5YearHighPct: number;
+  extensionAtr: number;
+  breakoutLevel: number;
+  volumeRatio: number;
+  closeLocation: number;
+  gapAtr: number;
+  rangeAtr: number;
+  coolingSessionsRemaining: number;
+  marketRegime: "RISK_ON" | "NEUTRAL" | "RISK_OFF" | "UNKNOWN";
+  marketBreadthPct: number;
+  benchmarkSymbol: string | null;
+  researchEligible: boolean;
 };
 
 export type RankedSecurity = {
@@ -94,6 +117,8 @@ export type RankedSecurity = {
   tradePlanState?: "CURRENT" | "REANALYSIS_REQUIRED";
   factors: FactorScores;
   tradePlan: TradePlan;
+  entryState?: EntryState;
+  setupMetrics?: SetupMetrics;
   reasonCodes: string[];
   hardGates: string[];
   modelVersion: string;
@@ -119,5 +144,11 @@ export const RISK_PLANS: Record<RiskPlanId, {
   growth: { id: "growth", riskBudgetPct: 1.5, maxWeightPct: 12, maxSectorPct: 40, maxMarketPct: 60, drawdownBreakerPct: 20 },
 };
 
-export const MODEL_VERSION = "meridian-swing-v2.0.0";
+export const ACTIVE_MODEL_VERSION = "meridian-swing-v2.0.0";
+export const CANDIDATE_MODEL_VERSION = "meridian-swing-v2.1.0";
+export const MODEL_VERSION = ACTIVE_MODEL_VERSION;
+export const SUPPORTED_MODEL_VERSIONS = [ACTIVE_MODEL_VERSION, CANDIDATE_MODEL_VERSION] as const;
+export function isSupportedModelVersion(value: unknown): value is typeof SUPPORTED_MODEL_VERSIONS[number] {
+  return SUPPORTED_MODEL_VERSIONS.includes(String(value) as typeof SUPPORTED_MODEL_VERSIONS[number]);
+}
 export const LEGACY_MODEL_VERSION = "meridian-swing-v1.0.0";

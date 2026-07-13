@@ -6,6 +6,7 @@ the live bridge and walk-forward backtest import it to prevent model drift.
 from __future__ import annotations
 
 import hashlib
+import bisect
 import json
 import math
 import os
@@ -54,6 +55,18 @@ def winsor(values, value):
     low = ordered[int((len(ordered) - 1) * .025)]
     high = ordered[math.ceil((len(ordered) - 1) * .975)]
     return max(low, min(high, value))
+
+
+def _percentile_sorted(ordered, target):
+    if len(ordered) <= 1: return 50.0
+    left=bisect.bisect_left(ordered,target); right=bisect.bisect_right(ordered,target)
+    return max(0.0,min(100.0,(left+max(0,right-left-1)/2)/(len(ordered)-1)*100))
+
+
+def _winsor_sorted(ordered, value):
+    if len(ordered)<4: return value
+    low=ordered[int((len(ordered)-1)*.025)]; high=ordered[math.ceil((len(ordered)-1)*.975)]
+    return max(low,min(high,value))
 
 
 def _valid_bars(snapshot):
@@ -180,14 +193,14 @@ def rank_snapshots(snapshots, allow_buy=True):
     groups = {}
     for item in snapshots:
         groups.setdefault((item["market"], item["assetType"]), []).append(item)
+    factor_names = ("trend", "momentum", "relativeStrength", "liquidity", "risk")
+    distributions = {key:{name:sorted(raw_by_id[item["instrumentId"]][name] for item in group) for name in factor_names} for key,group in groups.items()}
     for snapshot in snapshots:
         raw = raw_by_id[snapshot["instrumentId"]]
-        peers = [raw_by_id[item["instrumentId"]] for item in groups[(snapshot["market"], snapshot["assetType"])]]
-        factor_names = ("trend", "momentum", "relativeStrength", "liquidity", "risk")
         factors = {}
         for name in factor_names:
-            values = [item[name] for item in peers]
-            factors[name] = round(percentile(values, winsor(values, raw[name])), 1)
+            values = distributions[(snapshot["market"], snapshot["assetType"])][name]
+            factors[name] = round(_percentile_sorted(values, _winsor_sorted(values, raw[name])), 1)
         factors["regime"] = 80 if raw["regime"] > 0 else 55 if raw["regime"] == 0 else 25
         factors["structure"] = round(raw["structure"], 1)
         weights = CONFIG["etfWeights"] if snapshot["assetType"] == "ETF" else CONFIG["stockWeights"]
@@ -226,4 +239,3 @@ def rank_snapshots(snapshots, allow_buy=True):
 
 def model_identity():
     return {"modelVersion": MODEL_VERSION, "configHash": CONFIG_HASH, "config": CONFIG}
-

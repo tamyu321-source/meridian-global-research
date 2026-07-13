@@ -1,4 +1,4 @@
-import { MARKETS, MODEL_VERSION, type AssetType, type MarketCode } from "./types";
+import { CANDIDATE_MODEL_VERSION, MARKETS, type AssetType, type MarketCode } from "./types";
 import type { Locale } from "./types";
 import { tx } from "./i18n";
 
@@ -40,13 +40,13 @@ export async function createAnalysisJob(db: D1Database, ownerEmail: string, trig
   const components: AnalysisComponentRow[] = [];
   const createdIds = new Set<string>();
   for (const bucket of scope.buckets) {
-    const activeKey = `${MODEL_VERSION}:${bucket.market}:${bucket.assetType}`;
+    const activeKey = `${CANDIDATE_MODEL_VERSION}:${bucket.market}:${bucket.assetType}`;
     let component = await db.prepare("SELECT * FROM analysis_components WHERE active_key=? LIMIT 1").bind(activeKey).first<AnalysisComponentRow>();
     if (!component) {
       const componentId = crypto.randomUUID();
       try {
         await db.prepare(`INSERT INTO analysis_components (id,active_key,model_version,market,asset_type,status,phase,heartbeat_at,created_at,updated_at)
-          VALUES (?,?,?,?,?,'QUEUED','QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(componentId, activeKey, MODEL_VERSION, bucket.market, bucket.assetType).run();
+          VALUES (?,?,?,?,?,'QUEUED','QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(componentId, activeKey, CANDIDATE_MODEL_VERSION, bucket.market, bucket.assetType).run();
         component = await db.prepare("SELECT * FROM analysis_components WHERE id=?").bind(componentId).first<AnalysisComponentRow>();
         createdIds.add(componentId);
       } catch {

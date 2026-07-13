@@ -25,11 +25,11 @@ from datetime import datetime, timezone
 
 try:
     from .cache import MarketCache
-    from .model_v2 import CONFIG, CONFIG_HASH, MODEL_VERSION, model_identity, number, rank_snapshots
+    from .model_v21 import BENCHMARK_SYMBOLS, CONFIG, CONFIG_HASH, MODEL_VERSION, build_market_context, model_identity, number, rank_snapshots
     from .signed_request import signed_json as _signed_json
 except ImportError:
     from cache import MarketCache
-    from model_v2 import CONFIG, CONFIG_HASH, MODEL_VERSION, model_identity, number, rank_snapshots
+    from model_v21 import BENCHMARK_SYMBOLS, CONFIG, CONFIG_HASH, MODEL_VERSION, build_market_context, model_identity, number, rank_snapshots
     from signed_request import signed_json as _signed_json
 
 MARKETS = ("US", "CN", "HK", "TW", "JP", "KR", "SG")
@@ -188,6 +188,12 @@ def _snapshot(market, candidate, payload):
     return {"instrumentId":f"{market}:{symbol}","symbol":symbol,"name":candidate.get("shortName") or candidate.get("longName") or symbol,"market":market,"exchange":candidate.get("fullExchangeName") or meta.get("fullExchangeName") or MARKET[market]["exchange"],"currency":candidate.get("currency") or meta.get("currency") or MARKET[market]["currency"],"assetType":asset_type,"sector":sector,"source":"Yahoo Finance chart (5y adjusted OHLCV)","sourceCount":1,"freshness":"delayed","capturedAt":datetime.now(timezone.utc).isoformat(),"bars":bars,"price":price,"previousClose":previous,"sourceWarnings":["PUBLIC_DELAYED_DATA"],"sourceConflicts":conflicts,"corporateActionAnomalies":anomalies,"etfStructure":structure}
 
 
+def fetch_benchmark_snapshot(client, market):
+    symbol = BENCHMARK_SYMBOLS[market]
+    candidate = {"symbol":symbol,"shortName":f"{market} benchmark","quoteType":"STOCK","sector":"Market benchmark","currency":MARKET[market]["currency"],"fullExchangeName":MARKET[market]["exchange"]}
+    return _snapshot(market, candidate, client.chart(symbol))
+
+
 def collect_history(client, cache, market, candidates, scan_id, workers=6, progress=None):
     snapshots, errors, failed_candidates = [], [], []
     def load(candidate):
@@ -306,7 +312,7 @@ def restore_history_artifact(endpoint, secret, token, cache, market, asset_type)
 def upload_artifact(endpoint, secret, token, path, object_key, market, asset_type, scan_id):
     with open(path, "rb") as handle: body = handle.read()
     timestamp = datetime.now(timezone.utc).isoformat(); signature = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
-    headers = {"Content-Type":"application/vnd.apache.parquet","X-Meridian-Timestamp":timestamp,"X-Meridian-Signature":signature,"X-Idempotency-Key":"artifact-" + hashlib.sha256(object_key.encode()).hexdigest()[:32],"X-Meridian-Object-Key":object_key,"X-Meridian-Market":market,"X-Meridian-Asset-Type":asset_type,"X-Meridian-Scan-Id":scan_id,"User-Agent":USER_AGENT}
+    headers = {"Content-Type":"application/vnd.apache.parquet","X-Meridian-Timestamp":timestamp,"X-Meridian-Signature":signature,"X-Idempotency-Key":"artifact-" + hashlib.sha256(object_key.encode()).hexdigest()[:32],"X-Meridian-Object-Key":object_key,"X-Meridian-Market":market,"X-Meridian-Asset-Type":asset_type,"X-Meridian-Scan-Id":scan_id,"X-Meridian-Model-Version":MODEL_VERSION,"User-Agent":USER_AGENT}
     if token: headers["OAI-Sites-Authorization"] = "Bearer " + token
     with urllib.request.urlopen(urllib.request.Request(endpoint.rstrip("/") + "/api/ingest/artifacts", data=body, method="POST", headers=headers), timeout=180) as response: return json.loads(response.read().decode())
 
@@ -354,11 +360,20 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
         reporter.report("RUNNING", "ENRICHMENT", total_target, total_target, len(all_snapshots), len(errors), scan_id)
         enrich_candidate_profiles(client, cache, all_snapshots)
         reporter.report("RUNNING", "SCORING", total_target, total_target, len(all_snapshots), len(errors), scan_id)
-        rankings = rank_snapshots(all_snapshots, allow_buy=True); completed = datetime.now(timezone.utc)
+        market_contexts = {}
+        for market in markets:
+            market_pool = [item for item in all_snapshots if item["market"] == market]
+            try:
+                benchmark = fetch_benchmark_snapshot(client, market)
+                market_contexts[market] = build_market_context(market_pool, benchmark)
+            except Exception as exc:
+                market_contexts[market] = build_market_context(market_pool, None)
+                errors.append({"market":market,"symbol":BENCHMARK_SYMBOLS[market],"stage":"regime","error":type(exc).__name__})
+        rankings = rank_snapshots(all_snapshots, allow_buy=True, market_contexts=market_contexts); completed = datetime.now(timezone.utc)
         source_conflicts = sum(len(item.get("sourceConflicts") or []) for item in all_snapshots); action_anomalies = sum(len(item.get("corporateActionAnomalies") or []) for item in all_snapshots)
         complete = bool(markets) and all(coverage.get(market, {}).get("qualityGatePassed") for market in markets) and action_anomalies == 0
         status = "complete" if complete else "partial"
-        scan = {"id":scan_id,"provider":"Public exchange directories + Yahoo Finance adjusted OHLCV","modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"validationStatus":"SHADOW","status":status,"startedAt":started.isoformat(),"completedAt":completed.isoformat(),"requestedMarkets":markets,"requestedAssetTypes":list(asset_types),"jobId":job_id or None,"componentId":component_id or None,"targetStocksPerMarket":stock_target,"targetEtfsPerMarket":etf_target,"discoveredCount":sum(v["stocksDiscovered"]+v["etfsDiscovered"] for v in coverage.values()),"analyzedCount":len(rankings),"failedCount":len(errors),"fallbackCount":0,"coverage":coverage,"sourceConflicts":source_conflicts,"corporateActionAnomalies":action_anomalies,"qualityGatePassed":complete,"universeSnapshotDate":today}
+        scan = {"id":scan_id,"provider":"Public exchange directories + Yahoo Finance adjusted OHLCV + benchmark breadth","modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"validationStatus":"SHADOW","status":status,"startedAt":started.isoformat(),"completedAt":completed.isoformat(),"requestedMarkets":markets,"requestedAssetTypes":list(asset_types),"jobId":job_id or None,"componentId":component_id or None,"targetStocksPerMarket":stock_target,"targetEtfsPerMarket":etf_target,"discoveredCount":sum(v["stocksDiscovered"]+v["etfsDiscovered"] for v in coverage.values()),"analyzedCount":len(rankings),"failedCount":len(errors),"fallbackCount":0,"coverage":coverage,"marketContexts":market_contexts,"sourceConflicts":source_conflicts,"corporateActionAnomalies":action_anomalies,"qualityGatePassed":complete,"universeSnapshotDate":today}
         reporter.report("RUNNING", "UPLOADING", total_target, total_target, len(rankings), len(errors), scan_id)
         for (market,current_asset), path in parquet.items():
             upload_artifact(endpoint, secret, sites_token, path, f"history/{MODEL_VERSION}/{scan_id}/{market}/{current_asset}.parquet", market, current_asset, scan_id)
@@ -374,7 +389,7 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
 
 
 def main():
-    load_local_env(); parser = argparse.ArgumentParser(description="Meridian v2 comprehensive public market bridge")
+    load_local_env(); parser = argparse.ArgumentParser(description="Meridian v2.1 reliability-first public market bridge")
     parser.add_argument("--endpoint", default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret", default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token", default=os.getenv("OAI_SITES_BYPASS_TOKEN", "")); parser.add_argument("--markets", default=",".join(MARKETS)); parser.add_argument("--asset-types", default="STOCK,ETF"); parser.add_argument("--job-id", default=os.getenv("MERIDIAN_JOB_ID", "")); parser.add_argument("--component-id", default=os.getenv("MERIDIAN_COMPONENT_ID", "")); parser.add_argument("--stocks", type=int, default=int(os.getenv("MERIDIAN_STOCKS_PER_MARKET", "500"))); parser.add_argument("--etfs", type=int, default=int(os.getenv("MERIDIAN_ETFS_PER_MARKET", "100"))); parser.add_argument("--workers", type=int, default=int(os.getenv("MERIDIAN_HISTORY_WORKERS", "12"))); parser.add_argument("--loop", action="store_true"); args = parser.parse_args()
     if not args.endpoint or not args.secret: parser.error("--endpoint and --secret are required")
     markets = [item.strip().upper() for item in args.markets.split(",") if item.strip().upper() in MARKETS]

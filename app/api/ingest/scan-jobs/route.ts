@@ -1,6 +1,6 @@
 import { createAnalysisJob, reconcileAnalysisJob } from "@/lib/analysis-jobs";
 import { jsonError, runtimeEnv, verifyHmac } from "@/lib/server";
-import { MARKETS, MODEL_VERSION } from "@/lib/types";
+import { CANDIDATE_MODEL_VERSION, MARKETS } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +23,7 @@ export async function POST(request: Request) {
     if (body.trigger === "SCHEDULED" && MARKETS.includes(market as typeof MARKETS[number])) {
       const zone:Record<string,string> = { US:"America/New_York", CN:"Asia/Shanghai", HK:"Asia/Hong_Kong", TW:"Asia/Taipei", JP:"Asia/Tokyo", KR:"Asia/Seoul", SG:"Asia/Singapore" };
       const today = new Intl.DateTimeFormat("en-CA", { timeZone:zone[market], year:"numeric", month:"2-digit", day:"2-digit" }).format(new Date());
-      const active = await db.prepare("SELECT analysis_captured_at FROM active_scan_outputs WHERE model_version=? AND market=?").bind(MODEL_VERSION, market).all<{ analysis_captured_at:string }>();
+      const active = await db.prepare("SELECT analysis_captured_at FROM active_scan_outputs WHERE model_version=? AND market=?").bind(CANDIDATE_MODEL_VERSION, market).all<{ analysis_captured_at:string }>();
       const dates = (active.results ?? []).map((item) => new Intl.DateTimeFormat("en-CA", { timeZone:zone[market], year:"numeric", month:"2-digit", day:"2-digit" }).format(new Date(item.analysis_captured_at)));
       if (dates.length >= 2 && dates.every((value) => value === today)) {
         await db.prepare("INSERT INTO ingest_events (idempotency_key,provider,captured_at,object_key,record_count,status,created_at) VALUES (?,'github-schedule',?,?,0,'accepted',CURRENT_TIMESTAMP)").bind(idempotencyKey, new Date().toISOString(), `complete:${market}:${today}`).run();

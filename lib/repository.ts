@@ -1,5 +1,5 @@
 import { runtimeEnv } from "./server";
-import { MODEL_VERSION, RISK_PLANS, type AssetType, type MarketCode, type MarketSnapshot, type RankedSecurity, type RiskPlanId } from "./types";
+import { ACTIVE_MODEL_VERSION, RISK_PLANS, type AssetType, type MarketCode, type MarketSnapshot, type RankedSecurity, type RiskPlanId } from "./types";
 
 export type ScanSummary = {
   id: string; provider: string; modelVersion: string; status: string; startedAt: string; completedAt: string | null;
@@ -28,9 +28,9 @@ export async function persistRankings(snapshots: MarketSnapshot[], rankings: Ran
       VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(instrument_id,model_version,risk_plan,score_date) DO UPDATE SET score=excluded.score,confidence=excluded.confidence,factors_json=excluded.factors_json`)
       .bind(rank.instrumentId, rank.modelVersion, "capital_first", scoreDate, rank.score, rank.confidence, JSON.stringify(rank.factors)));
     const signalId = `${rank.modelVersion}:${rank.instrumentId}:${scoreDate}`;
-    statements.push(db.prepare(`INSERT INTO signals (id,user_email,instrument_id,model_version,risk_plan,status,action,score,confidence,trade_plan_json,reasons_json,hard_gates_json,source_captured_at,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET status=excluded.status,action=excluded.action,score=excluded.score,confidence=excluded.confidence,trade_plan_json=excluded.trade_plan_json,reasons_json=excluded.reasons_json,hard_gates_json=excluded.hard_gates_json,source_captured_at=excluded.source_captured_at,updated_at=CURRENT_TIMESTAMP`)
-      .bind(signalId, actor, rank.instrumentId, rank.modelVersion, "capital_first", rank.status, rank.action, rank.score, rank.confidence, JSON.stringify(rank.tradePlan), JSON.stringify(rank.reasonCodes), JSON.stringify(rank.hardGates), rank.capturedAt));
+    statements.push(db.prepare(`INSERT INTO signals (id,user_email,instrument_id,model_version,risk_plan,status,action,score,confidence,trade_plan_json,reasons_json,hard_gates_json,source_captured_at,setup_json,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET status=excluded.status,action=excluded.action,score=excluded.score,confidence=excluded.confidence,trade_plan_json=excluded.trade_plan_json,reasons_json=excluded.reasons_json,hard_gates_json=excluded.hard_gates_json,source_captured_at=excluded.source_captured_at,setup_json=excluded.setup_json,updated_at=CURRENT_TIMESTAMP`)
+      .bind(signalId, actor, rank.instrumentId, rank.modelVersion, "capital_first", rank.status, rank.action, rank.score, rank.confidence, JSON.stringify(rank.tradePlan), JSON.stringify(rank.reasonCodes), JSON.stringify(rank.hardGates), rank.capturedAt, JSON.stringify(rank.setupMetrics ?? {})));
   }
   for (let index = 0; index < statements.length; index += 80) await db.batch(statements.slice(index, index + 80));
   return { persisted: true };
@@ -59,9 +59,9 @@ export async function persistCompactRankings(records: RankedSecurity[], scanId: 
       VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(instrument_id,model_version,risk_plan,score_date) DO UPDATE SET score=excluded.score,confidence=excluded.confidence,factors_json=excluded.factors_json`)
       .bind(rank.instrumentId, rank.modelVersion, "capital_first", scoreDate, rank.score, rank.confidence, JSON.stringify(rank.factors)));
     const signalId = `${scanId}:${rank.instrumentId}`;
-    statements.push(db.prepare(`INSERT INTO signals (id,user_email,instrument_id,scan_id,model_version,risk_plan,status,action,score,confidence,trade_plan_json,reasons_json,hard_gates_json,source_captured_at,analysis_price,asset_model,validation_status,config_hash,data_quality_json,selection_json,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET status=excluded.status,action=excluded.action,score=excluded.score,confidence=excluded.confidence,trade_plan_json=excluded.trade_plan_json,reasons_json=excluded.reasons_json,hard_gates_json=excluded.hard_gates_json,source_captured_at=excluded.source_captured_at,analysis_price=excluded.analysis_price,asset_model=excluded.asset_model,validation_status=excluded.validation_status,config_hash=excluded.config_hash,data_quality_json=excluded.data_quality_json,selection_json=excluded.selection_json,updated_at=CURRENT_TIMESTAMP`)
-      .bind(signalId, actor, rank.instrumentId, scanId, rank.modelVersion, "capital_first", rank.status, rank.action, rank.score, rank.confidence, JSON.stringify(rank.tradePlan), JSON.stringify(rank.reasonCodes), JSON.stringify(rank.hardGates), rank.capturedAt, rank.price, rank.assetModel, rank.validationStatus, rank.configHash, JSON.stringify(rank.dataQuality), JSON.stringify(rank.selection)));
+    statements.push(db.prepare(`INSERT INTO signals (id,user_email,instrument_id,scan_id,model_version,risk_plan,status,action,score,confidence,trade_plan_json,reasons_json,hard_gates_json,source_captured_at,analysis_price,asset_model,validation_status,config_hash,data_quality_json,selection_json,setup_json,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET status=excluded.status,action=excluded.action,score=excluded.score,confidence=excluded.confidence,trade_plan_json=excluded.trade_plan_json,reasons_json=excluded.reasons_json,hard_gates_json=excluded.hard_gates_json,source_captured_at=excluded.source_captured_at,analysis_price=excluded.analysis_price,asset_model=excluded.asset_model,validation_status=excluded.validation_status,config_hash=excluded.config_hash,data_quality_json=excluded.data_quality_json,selection_json=excluded.selection_json,setup_json=excluded.setup_json,updated_at=CURRENT_TIMESTAMP`)
+      .bind(signalId, actor, rank.instrumentId, scanId, rank.modelVersion, "capital_first", rank.status, rank.action, rank.score, rank.confidence, JSON.stringify(rank.tradePlan), JSON.stringify(rank.reasonCodes), JSON.stringify(rank.hardGates), rank.capturedAt, rank.price, rank.assetModel, rank.validationStatus, rank.configHash, JSON.stringify(rank.dataQuality), JSON.stringify(rank.selection), JSON.stringify(rank.setupMetrics ?? {})));
   }
   for (let index = 0; index < statements.length; index += 80) await db.batch(statements.slice(index, index + 80));
   return { persisted: true };
@@ -105,7 +105,7 @@ function parseJson<T>(value: unknown, fallback: T): T {
   try { return value ? JSON.parse(String(value)) as T : fallback; } catch { return fallback; }
 }
 
-export async function loadLatestScanRankings(markets: MarketCode[], assetType: AssetType | "ALL", riskPlan: RiskPlanId) {
+export async function loadLatestScanRankings(markets: MarketCode[], assetType: AssetType | "ALL", riskPlan: RiskPlanId, modelVersion = ACTIVE_MODEL_VERSION) {
   const db = runtimeEnv().DB;
   if (!db) return null;
   const assets: AssetType[] = assetType === "ALL" ? ["STOCK", "ETF"] : [assetType];
@@ -113,11 +113,11 @@ export async function loadLatestScanRankings(markets: MarketCode[], assetType: A
   const signalRows: Record<string, unknown>[] = [];
   for (const market of markets) for (const asset of assets) {
     let scanRow = await db.prepare(`SELECT sr.*,o.scan_id bucket_scan_id,o.analysis_captured_at bucket_analysis_at,o.market bucket_market,o.asset_type bucket_asset_type
-      FROM active_scan_outputs o JOIN scan_runs sr ON sr.id=o.scan_id WHERE o.model_version=? AND o.market=? AND o.asset_type=? LIMIT 1`).bind(MODEL_VERSION, market, asset).first<typeof bucketRows[number]>();
+      FROM active_scan_outputs o JOIN scan_runs sr ON sr.id=o.scan_id WHERE o.model_version=? AND o.market=? AND o.asset_type=? LIMIT 1`).bind(modelVersion, market, asset).first<typeof bucketRows[number]>();
     if (!scanRow) scanRow = await db.prepare(`SELECT sr.*,sr.id bucket_scan_id,COALESCE(sr.completed_at,sr.started_at) bucket_analysis_at,? bucket_market,? bucket_asset_type
       FROM scan_runs sr WHERE sr.model_version=? AND sr.status='complete' AND sr.quality_gate_passed=1 AND EXISTS (
         SELECT 1 FROM signals sig JOIN securities sec ON sec.instrument_id=sig.instrument_id WHERE sig.scan_id=sr.id AND sec.market=? AND sec.asset_type=?)
-      ORDER BY sr.completed_at DESC LIMIT 1`).bind(market, asset, MODEL_VERSION, market, asset).first<typeof bucketRows[number]>();
+      ORDER BY sr.completed_at DESC LIMIT 1`).bind(market, asset, modelVersion, market, asset).first<typeof bucketRows[number]>();
     if (!scanRow) continue;
     bucketRows.push(scanRow);
     const rows = await db.prepare(`SELECT sig.*,sec.symbol,sec.name,sec.market,sec.exchange,sec.currency,sec.asset_type,sec.sector,q.price,q.previous_close,q.source,q.freshness,q.captured_at,ds.factors_json
@@ -140,10 +140,11 @@ export async function loadLatestScanRankings(markets: MarketCode[], assetType: A
       price, changePct:previous > 0 ? Number(((price / previous - 1) * 100).toFixed(2)) : 0, score:Number(row.score), confidence:Number(row.confidence),
       action:String(row.action) as RankedSecurity["action"], status:String(row.status) as RankedSecurity["status"], freshness:String(row.freshness) as RankedSecurity["freshness"], source:String(row.source), capturedAt:String(row.captured_at),
       factors:parseJson<RankedSecurity["factors"]>(row.factors_json, { trend:0, momentum:0, relativeStrength:0, liquidity:0, risk:0, regime:0 }), tradePlan,
-      reasonCodes:parseJson<string[]>(row.reasons_json, []), hardGates:parseJson<string[]>(row.hard_gates_json, []), modelVersion:String(row.model_version ?? MODEL_VERSION),
+      reasonCodes:parseJson<string[]>(row.reasons_json, []), hardGates:parseJson<string[]>(row.hard_gates_json, []), modelVersion:String(row.model_version ?? modelVersion),
       assetModel:String(row.asset_model ?? "LEGACY_V1") as RankedSecurity["assetModel"], validationStatus:String(row.validation_status ?? "SHADOW") as RankedSecurity["validationStatus"],
       configHash:String(row.config_hash ?? ""), dataQuality:parseJson<RankedSecurity["dataQuality"]>(row.data_quality_json, { completenessPct:0, sourceCount:1, warnings:[], conflicts:[], corporateActionAnomalies:[], hardGates:[] }),
       selection:parseJson<RankedSecurity["selection"]>(row.selection_json, { eligibleBeforeCap:false, bucketRank:0, buyLimit:0, capped:false }),
+      setupMetrics:parseJson<RankedSecurity["setupMetrics"]>(row.setup_json, undefined), entryState:parseJson<RankedSecurity["setupMetrics"]>(row.setup_json, undefined)?.entryState,
       analysisCapturedAt:String(row.source_captured_at), analysisPrice:Number(row.analysis_price ?? 0), analysisScanId:String(row.scan_id),
       tradePlanState:price >= tradePlan.entryLow && price <= tradePlan.entryHigh ? "CURRENT" : "REANALYSIS_REQUIRED",
     } satisfies RankedSecurity;

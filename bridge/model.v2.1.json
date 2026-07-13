@@ -1,0 +1,52 @@
+{
+  "modelVersion": "meridian-swing-v2.1.0",
+  "validationStatus": "SHADOW",
+  "candidateOnly": true,
+  "historyYears": 5,
+  "minimumTradingDays": 252,
+  "completionCoveragePct": 95,
+  "shadowCompletenessPct": 98,
+  "stockBuyLimitPerMarket": 3,
+  "etfBuyLimitPerMarket": 1,
+  "buyScore": 80,
+  "buyConfidence": 80,
+  "minimumRelativeStrength": 70,
+  "sourceConflictPct": 1,
+  "maximumExtensionAtr": 2.0,
+  "maximumGapAtr": 0.75,
+  "maximumRangeAtr": 2.5,
+  "breakoutVolumeRatio": 1.5,
+  "breakoutCloseLocation": 0.75,
+  "pullbackToleranceAtr": 0.75,
+  "pullbackMaximumDrawdownPct": 6,
+  "pullbackCloseLocation": 0.60,
+  "coolingSessions": 3,
+  "minimumStopPct": 1.25,
+  "maximumStopPct": 8,
+  "promotionGates": {
+    "minimumOosProfitFactor": 1.2,
+    "minimumOosSharpe": 0.8,
+    "minimumOverallTrades": 500,
+    "minimumTradesPerMarket": 40,
+    "maximumCapitalFirstDrawdownPct": 10,
+    "minimumDrawdownReductionPct": 15,
+    "minimumFalseBreakoutReductionPct": 15,
+    "shadowTradingDays": 30
+  },
+  "stockWeights": {
+    "trend": 0.25,
+    "momentum": 0.25,
+    "relativeStrength": 0.15,
+    "liquidity": 0.10,
+    "risk": 0.15,
+    "regime": 0.10
+  },
+  "etfWeights": {
+    "trend": 0.25,
+    "momentum": 0.20,
+    "relativeStrength": 0.15,
+    "liquidity": 0.20,
+    "risk": 0.15,
+    "structure": 0.05
+  }
+}
