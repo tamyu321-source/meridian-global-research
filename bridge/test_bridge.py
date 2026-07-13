@@ -1,9 +1,10 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from bridge.cache import MarketCache
-from bridge.meridian_bridge import _symbol_matches
+from bridge.meridian_bridge import ProgressReporter, _symbol_matches
 from bridge.model_v2 import CONFIG_HASH, MODEL_VERSION, number, rank_snapshots, raw_factors
 
 
@@ -17,6 +18,16 @@ def fixture(symbol, slope=.2, asset_type="STOCK", sector="Technology", volume_mu
 
 
 class BridgeUnitTests(unittest.TestCase):
+    def test_progress_reporter_never_decreases_durable_counts(self):
+        reporter=ProgressReporter("https://example.test","secret","token","job","component")
+        with patch("bridge.meridian_bridge._signed_json", return_value={"accepted":True}) as send:
+            reporter.report("RUNNING","HISTORY",100,100,129,11,"scan")
+            reporter.report("RUNNING","ENRICHMENT",100,100,100,11,"scan")
+        payload=send.call_args.args[2]
+        self.assertEqual(payload["processed"],100)
+        self.assertEqual(payload["updated"],129)
+        self.assertEqual(payload["failed"],11)
+
     def test_number_rejects_missing_and_nan(self):
         self.assertEqual(number(None), 0); self.assertEqual(number("nan"), 0); self.assertEqual(number("12.5"), 12.5)
 

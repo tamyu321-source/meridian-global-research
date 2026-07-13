@@ -275,11 +275,14 @@ class ProgressReporter:
     def __init__(self, endpoint, secret, token, job_id="", component_id=""):
         self.endpoint, self.secret, self.token, self.job_id, self.component_id = endpoint.rstrip("/"), secret, token, job_id, component_id
         self.sequence = 0
+        self.counts = {"total": 0, "processed": 0, "updated": 0, "failed": 0}
 
     def report(self, status, phase, total=0, processed=0, updated=0, failed=0, scan_id=None, error_code=None, error_detail=None):
         if not self.job_id or not self.component_id: return None
         self.sequence += 1
-        payload = {"jobId":self.job_id,"componentId":self.component_id,"status":status,"phase":phase,"total":int(total),"processed":int(processed),"updated":int(updated),"failed":int(failed),"scanId":scan_id,"githubRunId":os.getenv("GITHUB_RUN_ID"),"githubRunUrl":f"{os.getenv('GITHUB_SERVER_URL','https://github.com')}/{os.getenv('GITHUB_REPOSITORY','')}/actions/runs/{os.getenv('GITHUB_RUN_ID','')}" if os.getenv("GITHUB_RUN_ID") else None,"errorCode":error_code,"errorDetail":str(error_detail)[:800] if error_detail else None}
+        requested = {"total": int(total), "processed": int(processed), "updated": int(updated), "failed": int(failed)}
+        self.counts = {key: max(self.counts[key], value) for key, value in requested.items()}
+        payload = {"jobId":self.job_id,"componentId":self.component_id,"status":status,"phase":phase,**self.counts,"scanId":scan_id,"githubRunId":os.getenv("GITHUB_RUN_ID"),"githubRunUrl":f"{os.getenv('GITHUB_SERVER_URL','https://github.com')}/{os.getenv('GITHUB_REPOSITORY','')}/actions/runs/{os.getenv('GITHUB_RUN_ID','')}" if os.getenv("GITHUB_RUN_ID") else None,"errorCode":error_code,"errorDetail":str(error_detail)[:800] if error_detail else None}
         return _signed_json(self.endpoint + "/api/ingest/scan-progress", self.secret, payload, f"progress-{self.component_id}-{self.sequence:05d}", self.token)
 
 
