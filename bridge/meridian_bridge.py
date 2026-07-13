@@ -26,9 +26,11 @@ from datetime import datetime, timezone
 try:
     from .cache import MarketCache
     from .model_v2 import CONFIG, CONFIG_HASH, MODEL_VERSION, model_identity, number, rank_snapshots
+    from .signed_request import signed_json as _signed_json
 except ImportError:
     from cache import MarketCache
     from model_v2 import CONFIG, CONFIG_HASH, MODEL_VERSION, model_identity, number, rank_snapshots
+    from signed_request import signed_json as _signed_json
 
 MARKETS = ("US", "CN", "HK", "TW", "JP", "KR", "SG")
 MARKET = {
@@ -267,14 +269,6 @@ def enrich_candidate_profiles(client, cache, snapshots, workers=8):
 
 def _chunks(items, size):
     for index in range(0, len(items), size): yield items[index:index + size]
-
-
-def _signed_json(url, secret, payload, key, token="", timeout=90):
-    body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode(); timestamp = datetime.now(timezone.utc).isoformat()
-    signature = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
-    headers = {"Content-Type":"application/json","X-Meridian-Timestamp":timestamp,"X-Meridian-Signature":signature,"X-Idempotency-Key":key,"User-Agent":USER_AGENT}
-    if token: headers["OAI-Sites-Authorization"] = "Bearer " + token
-    with urllib.request.urlopen(urllib.request.Request(url, data=body, method="POST", headers=headers), timeout=timeout) as response: return json.loads(response.read().decode())
 
 
 class ProgressReporter:

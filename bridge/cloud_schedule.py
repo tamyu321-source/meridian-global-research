@@ -9,9 +9,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 try:
-    from .meridian_bridge import _signed_json
+    from .signed_request import signed_json
 except ImportError:
-    from meridian_bridge import _signed_json
+    from signed_request import signed_json
 
 SCHEDULES = {
     "47 14 * * 1-5": ("TW", "Asia/Taipei"),
@@ -59,7 +59,7 @@ def prepare(args):
         if sessions is not None and local_date not in sessions: continue
         payload = {"trigger":"SCHEDULED","market":market,"assetType":"ALL"}
         key = f"schedule-{market}-{local_date}-{os.getenv('GITHUB_RUN_ID','local')}-{os.getenv('GITHUB_RUN_ATTEMPT','1')}"
-        result = _signed_json(args.endpoint.rstrip("/") + "/api/ingest/scan-jobs", args.secret, payload, key, args.token)
+        result = signed_json(args.endpoint.rstrip("/") + "/api/ingest/scan-jobs", args.secret, payload, key, args.token)
         job_id = result.get("jobId", "")
         if job_id: job_ids.append(job_id)
         components.extend([{**item, "jobId": job_id} for item in (result.get("components") or [])])
@@ -68,7 +68,7 @@ def prepare(args):
 
 def fail(args):
     payload = {"jobId":args.job_id,"componentId":args.component_id,"status":"FAILED","phase":"UPLOADING","total":args.total,"processed":args.processed,"updated":args.updated,"failed":max(1,args.failed),"githubRunId":os.getenv("GITHUB_RUN_ID"),"errorCode":"GITHUB_JOB_FAILED","errorDetail":"The GitHub analysis job stopped before producing an activatable result."}
-    _signed_json(args.endpoint.rstrip("/") + "/api/ingest/scan-progress", args.secret, payload, f"workflow-failure-{args.component_id}-{os.getenv('GITHUB_RUN_ATTEMPT','1')}", args.token)
+    signed_json(args.endpoint.rstrip("/") + "/api/ingest/scan-progress", args.secret, payload, f"workflow-failure-{args.component_id}-{os.getenv('GITHUB_RUN_ATTEMPT','1')}", args.token)
 
 
 def main():
