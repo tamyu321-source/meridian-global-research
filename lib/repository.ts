@@ -1,4 +1,5 @@
 import { runtimeEnv } from "./server";
+import { normalizeSetupMetrics } from "./setup-metrics";
 import { ACTIVE_MODEL_VERSION, RISK_PLANS, type AssetType, type MarketCode, type MarketSnapshot, type RankedSecurity, type RiskPlanId } from "./types";
 
 export type ScanSummary = {
@@ -134,6 +135,7 @@ export async function loadLatestScanRankings(markets: MarketCode[], assetType: A
     tradePlan.riskBudgetPct = plan.riskBudgetPct;
     const price = Number(row.price ?? 0);
     const previous = Number(row.previous_close ?? price);
+    const setupMetrics = normalizeSetupMetrics(parseJson<unknown>(row.setup_json, undefined));
     return {
       instrumentId:String(row.instrument_id), symbol:String(row.symbol), name:String(row.name), market:String(row.market) as MarketCode,
       exchange:String(row.exchange), currency:String(row.currency), assetType:String(row.asset_type) as AssetType, sector:String(row.sector ?? "Unclassified"),
@@ -144,7 +146,7 @@ export async function loadLatestScanRankings(markets: MarketCode[], assetType: A
       assetModel:String(row.asset_model ?? "LEGACY_V1") as RankedSecurity["assetModel"], validationStatus:String(row.validation_status ?? "SHADOW") as RankedSecurity["validationStatus"],
       configHash:String(row.config_hash ?? ""), dataQuality:parseJson<RankedSecurity["dataQuality"]>(row.data_quality_json, { completenessPct:0, sourceCount:1, warnings:[], conflicts:[], corporateActionAnomalies:[], hardGates:[] }),
       selection:parseJson<RankedSecurity["selection"]>(row.selection_json, { eligibleBeforeCap:false, bucketRank:0, buyLimit:0, capped:false }),
-      setupMetrics:parseJson<RankedSecurity["setupMetrics"]>(row.setup_json, undefined), entryState:parseJson<RankedSecurity["setupMetrics"]>(row.setup_json, undefined)?.entryState,
+      setupMetrics, entryState:setupMetrics?.entryState,
       analysisCapturedAt:String(row.source_captured_at), analysisPrice:Number(row.analysis_price ?? 0), analysisScanId:String(row.scan_id),
       tradePlanState:price >= tradePlan.entryLow && price <= tradePlan.entryHigh ? "CURRENT" : "REANALYSIS_REQUIRED",
     } satisfies RankedSecurity;

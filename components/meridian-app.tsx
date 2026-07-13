@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiErrorText, codeText, riskPlanName, tx } from "@/lib/i18n";
+import { normalizeSetupMetrics } from "@/lib/setup-metrics";
 import type { Locale, PriceBar, RankedSecurity, RiskPlanId } from "@/lib/types";
 import { ACTIVE_MODEL_VERSION, CANDIDATE_MODEL_VERSION, MARKETS, RISK_PLANS } from "@/lib/types";
 
@@ -243,14 +244,16 @@ function AnalysisConfirmModal({ locale, market, assetType, starting, onCancel, o
 }
 
 function SecurityPanel({ security, bars, locale, t, quantity, setQuantity, onPaperBuy, standalone=false }: { security: RankedSecurity; bars:PriceBar[]; locale: Locale; t: typeof words[Locale]; quantity:number; setQuantity:(value:number)=>void; onPaperBuy:()=>void; standalone?:boolean }) {
-  const setup=security.setupMetrics;
+  // Keep the page usable when a legacy v2.0 row or an interrupted upload has
+  // an empty/partial setup payload.
+  const setup=normalizeSetupMetrics(security.setupMetrics);
   const candidateLocked=security.modelVersion===CANDIDATE_MODEL_VERSION;
   return <aside className={`security-panel ${standalone ? "standalone" : ""}`}>
     <div className="security-head"><div><span>{security.market} · {codeText(locale,security.assetType)} · {security.exchange}</span><h2>{security.name}</h2><p>{security.symbol} / {security.currency}</p></div><div className="score-orbit"><strong>{security.score}</strong><small>{codeText(locale,security.status)}</small></div></div>
     <div className="source-banner"><span className={`freshness freshness-${security.freshness}`}>{codeText(locale,security.freshness)}</span><div><strong>{security.source}</strong><small>{tx(locale,"quoteTime")}: {new Date(security.capturedAt).toLocaleString(locale)} · {security.currency} {security.price.toLocaleString(locale)}</small><small>{tx(locale,"analysisTime")}: {security.analysisCapturedAt ? new Date(security.analysisCapturedAt).toLocaleString(locale) : "—"} · {tx(locale,"analysisPrice")}: {security.analysisPrice ? `${security.currency} ${security.analysisPrice.toLocaleString(locale)}` : "—"}</small></div></div>
     <div className="risk-limit-grid"><div><span>{t.quality}</span><strong>{security.dataQuality?.completenessPct ?? 0}%</strong></div><div><span>{t.sources}</span><strong>{security.dataQuality?.sourceCount ?? 0}</strong></div><div><span>{t.bucket}</span><strong>{security.selection?.bucketRank ?? 0} / {security.selection?.buyLimit ?? 0} BUY</strong></div><div><span>{tx(locale,"model")}</span><strong>{security.assetModel}</strong></div></div>
     {setup&&<><div className={`entry-state entry-${setup.entryState.toLowerCase()}`}><span>{tx(locale,"entryQuality")}</span><strong>{codeText(locale,setup.entryState)}</strong></div><div className="setup-grid"><div><span>{tx(locale,"high52Distance")}</span><strong>{setup.distance52WeekHighPct.toFixed(2)}%</strong></div><div><span>{tx(locale,"high5yDistance")}</span><strong>{setup.distance5YearHighPct.toFixed(2)}%</strong></div><div><span>{tx(locale,"extensionAtr")}</span><strong>{setup.extensionAtr.toFixed(2)} ATR</strong></div><div><span>{tx(locale,"breakoutLevel")}</span><strong>{setup.breakoutLevel.toLocaleString(locale)}</strong></div><div><span>{tx(locale,"volumeRatio")}</span><strong>{setup.volumeRatio.toFixed(2)}×</strong></div><div><span>{tx(locale,"closeLocation")}</span><strong>{(setup.closeLocation*100).toFixed(0)}%</strong></div><div><span>{tx(locale,"marketRegime")}</span><strong>{codeText(locale,setup.marketRegime)}</strong></div><div><span>{tx(locale,"marketBreadth")}</span><strong>{setup.marketBreadthPct.toFixed(1)}%</strong></div></div></>}
-    {bars.length>0&&<PriceChart bars={bars} security={security} locale={locale}/>}
+    {bars.length>0&&<PriceChart bars={bars} security={{...security,setupMetrics:setup}} locale={locale}/>}
     <div className="factor-deck"><h3>{t.factors}</h3>{factorKeys.map((key,index)=><div key={key}><span>{factorName[locale][index]}</span><i><b style={{width:`${security.factors[key]}%`}}/></i><strong>{security.factors[key]}</strong></div>)}</div>
     <div className="trade-plan"><h3>{t.plan}</h3><dl><div><dt>{t.entry}</dt><dd>{security.tradePlan.entryLow}–{security.tradePlan.entryHigh}</dd></div><div><dt>{t.stop}</dt><dd>{security.tradePlan.stop}<small>{security.tradePlan.stopDistancePct ? ` · ${security.tradePlan.stopDistancePct}%` : ""}</small></dd></div><div><dt>{t.targets}</dt><dd>{security.tradePlan.target1} / {security.tradePlan.target2}<small>{security.tradePlan.rewardRiskKind ? ` · ${tx(locale,"plannedR")} 1.5R / 2.5R` : ""}</small></dd></div><div><dt>{t.maxWeight}</dt><dd>{security.tradePlan.maxWeightPct}%</dd></div></dl></div>
     <div className="evidence"><h3>{t.reason}</h3><div>{security.reasonCodes.map((code)=><span key={code}>{codeText(locale,code)}</span>)}</div>{security.hardGates.length>0&&<p><b>!</b>{t.blocked}: {security.hardGates.map((code)=>codeText(locale,code)).join(" · ")}</p>}</div>
