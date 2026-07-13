@@ -1,10 +1,11 @@
 import { fetchFxRate } from "@/lib/fx";
+import { deriveHoldingAdvice, type HoldingSignal } from "@/lib/holding-advice";
 import { estimateMarketCosts, marketRulesForClient, marketSessionState, qualifiesForMinimumLotException, validateMarketQuantity, validatePositionQuantity } from "@/lib/market-rules";
 import { fetchSymbolSnapshot } from "@/lib/public-data";
 import { paperQuoteIsExecutable, paperQuoteNeedsRefresh } from "@/lib/quote-freshness";
 import { recordAudit } from "@/lib/repository";
 import { apiUser, runtimeEnv } from "@/lib/server";
-import { RISK_PLANS, type AssetType, type MarketCode, type RiskPlanId } from "@/lib/types";
+import { MODEL_VERSION, RISK_PLANS, type AssetType, type MarketCode, type RiskPlanId, type TradePlan } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,13 @@ const paperErrorFallback:Record<PaperErrorCode,string> = {
 function paperError(errorCode:PaperErrorCode, status:number, errorParams:Record<string,string|number> = {}, detail?:unknown) {
   return Response.json({ error:paperErrorFallback[errorCode], errorCode, errorParams, detail:detail instanceof Error ? detail.message : undefined }, { status });
 }
+
+function parseJson<T>(value:unknown, fallback:T):T {
+  try { return typeof value === "string" ? JSON.parse(value) as T : fallback; }
+  catch { return fallback; }
+}
+
+const emptyTradePlan:TradePlan = { entryLow:0,entryHigh:0,invalidation:0,stop:0,target1:0,target2:0,trailingAtr:0,rewardRisk:0,maxWeightPct:0,riskBudgetPct:0 };
 
 function chinaTradingDayStartUtc(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone:"Asia/Shanghai", year:"numeric", month:"2-digit", day:"2-digit" }).formatToParts(now);
@@ -40,8 +48,16 @@ async function refreshPaperQuote(db:D1Database, quote:DbRow) {
 
 async function portfolioState(db:D1Database, portfolio:DbRow) {
   const portfolioId = String(portfolio.id), baseCurrency = String(portfolio.base_currency);
-  const result = await db.prepare(`SELECT p.*,s.symbol,s.name,s.market,s.currency,s.asset_type,s.sector,q.price,q.source,q.freshness,q.captured_at
-    FROM paper_positions p JOIN securities s ON s.instrument_id=p.instrument_id LEFT JOIN latest_quotes q ON q.instrument_id=p.instrument_id WHERE p.portfolio_id=?`).bind(portfolioId).all<DbRow>();
+  const result = await db.prepare(`SELECT p.*,s.symbol,s.name,s.market,s.currency,s.asset_type,s.sector,q.price,q.source,q.freshness,q.captured_at,
+      out.analysis_captured_at,sig.id signal_id,sig.action signal_action,sig.score signal_score,sig.confidence signal_confidence,
+      sig.trade_plan_json,sig.reasons_json,sig.hard_gates_json,sig.analysis_price,sig.model_version signal_model_version,
+      sig.asset_model,sig.validation_status,sig.data_quality_json
+    FROM paper_positions p
+    JOIN securities s ON s.instrument_id=p.instrument_id
+    LEFT JOIN latest_quotes q ON q.instrument_id=p.instrument_id
+    LEFT JOIN active_scan_outputs out ON out.model_version=? AND out.market=s.market AND out.asset_type=s.asset_type
+    LEFT JOIN signals sig ON sig.scan_id=out.scan_id AND sig.instrument_id=p.instrument_id
+    WHERE p.portfolio_id=?`).bind(MODEL_VERSION,portfolioId).all<DbRow>();
   const raw = result.results ?? [];
   const currencies = [...new Set(raw.map((row) => String(row.currency)))];
   const fxEntries = await Promise.all(currencies.map(async (currency) => [currency, await fetchFxRate(currency, baseCurrency)] as const));
@@ -49,8 +65,19 @@ async function portfolioState(db:D1Database, portfolio:DbRow) {
   const todayBuys = await db.prepare(`SELECT instrument_id,SUM(quantity) quantity FROM paper_orders WHERE portfolio_id=? AND side='BUY' AND status='FILLED' AND created_at>=? GROUP BY instrument_id`)
     .bind(portfolioId, chinaTradingDayStartUtc()).all<{ instrument_id:string; quantity:number }>();
   const chinaBuys = new Map((todayBuys.results ?? []).map((row) => [row.instrument_id, Number(row.quantity)]));
+  const scoreResult = await db.prepare(`SELECT instrument_id,score,confidence,score_date FROM (
+      SELECT instrument_id,score,confidence,score_date,ROW_NUMBER() OVER (PARTITION BY instrument_id ORDER BY score_date DESC) score_rank
+      FROM daily_scores WHERE model_version=? AND risk_plan='capital_first'
+        AND instrument_id IN (SELECT instrument_id FROM paper_positions WHERE portfolio_id=?))
+    WHERE score_rank<=2 ORDER BY instrument_id,score_date DESC`).bind(MODEL_VERSION,portfolioId).all<{ instrument_id:string; score:number; confidence:number; score_date:string }>();
+  const recentScores = new Map<string,Array<{ score:number; confidence:number; scoreDate:string }>>();
+  for (const row of scoreResult.results ?? []) {
+    const values = recentScores.get(row.instrument_id) ?? [];
+    values.push({ score:Number(row.score),confidence:Number(row.confidence),scoreDate:String(row.score_date) });
+    recentScores.set(row.instrument_id,values);
+  }
   const exposuresByMarket:Record<string,number> = {}, exposuresBySector:Record<string,number> = {};
-  const positions = raw.map((row) => {
+  const positionsWithoutAdvice = raw.map((row) => {
     const rateInfo = fx.get(String(row.currency)) ?? { rate:1, source:"identity", capturedAt:new Date().toISOString() };
     const quantity = Number(row.quantity), price = Number(row.price ?? 0), averageCost = Number(row.average_cost);
     const baseMarketValue = price * quantity * rateInfo.rate;
@@ -62,11 +89,31 @@ async function portfolioState(db:D1Database, portfolio:DbRow) {
     return { ...row, quantity, price, average_cost:averageCost, fx_rate:rateInfo.rate, fx_source:rateInfo.source, base_currency:baseCurrency,
       base_market_value:Number(baseMarketValue.toFixed(2)), unrealized_pnl_base:Number(unrealizedPnlBase.toFixed(2)), sellable_quantity:sellableQuantity };
   });
-  const marketValue = positions.reduce((sum, row) => sum + row.base_market_value, 0);
+  const marketValue = positionsWithoutAdvice.reduce((sum, row) => sum + row.base_market_value, 0);
   const equity = Number(portfolio.cash) + marketValue;
   const highWatermark = Math.max(Number(portfolio.high_watermark), Number(portfolio.starting_capital));
   const drawdownPct = highWatermark > 0 ? Math.max(0, (1 - equity / highWatermark) * 100) : 0;
-  return { positions, equity, marketValue, drawdownPct, exposuresByMarket, exposuresBySector };
+  const riskPlan = String(portfolio.risk_plan) as RiskPlanId;
+  const positions = positionsWithoutAdvice.map((row) => {
+    const quality = parseJson<{ conflicts?:unknown[]; corporateActionAnomalies?:unknown[] }>(row.data_quality_json,{});
+    const signal:HoldingSignal|null = row.signal_id ? {
+      action:String(row.signal_action),score:Number(row.signal_score),confidence:Number(row.signal_confidence),
+      analysisCapturedAt:String(row.analysis_captured_at ?? row.captured_at ?? ""),analysisPrice:Number(row.analysis_price ?? 0),
+      modelVersion:String(row.signal_model_version),assetModel:String(row.asset_model),validationStatus:String(row.validation_status),
+      tradePlan:parseJson<TradePlan>(row.trade_plan_json,emptyTradePlan),reasonCodes:parseJson<string[]>(row.reasons_json,[]),
+      hardGates:parseJson<string[]>(row.hard_gates_json,[]),conflicts:Array.isArray(quality.conflicts)?quality.conflicts:[],
+      corporateActionAnomalies:Array.isArray(quality.corporateActionAnomalies)?quality.corporateActionAnomalies:[],
+    } : null;
+    const market = String(row.market) as MarketCode, sector = String(row.sector ?? "Unclassified");
+    const advice = deriveHoldingAdvice({ market,assetType:String(row.asset_type) as AssetType,sector,quantity:Number(row.quantity),sellableQuantity:Number(row.sellable_quantity),
+      price:Number(row.price),averageCost:Number(row.average_cost),fxRate:Number(row.fx_rate),baseMarketValue:Number(row.base_market_value),equity,
+      marketExposure:Number(exposuresByMarket[market] ?? 0),sectorExposure:Number(exposuresBySector[sector] ?? 0),riskPlan,
+      quoteFreshness:String(row.freshness ?? "stale"),quoteCapturedAt:String(row.captured_at ?? ""),signal,recentScores:recentScores.get(String(row.instrument_id)) ?? [] });
+    return { ...row,advice,recent_scores:recentScores.get(String(row.instrument_id)) ?? [] };
+  });
+  const adviceCounts = positions.reduce<Record<string,number>>((counts,row) => { counts[row.advice.action]=(counts[row.advice.action]??0)+1; return counts; },{});
+  const limits = RISK_PLANS[riskPlan] ?? RISK_PLANS.capital_first;
+  return { positions, equity, marketValue, drawdownPct, exposuresByMarket, exposuresBySector,adviceCounts,newBuysPaused:drawdownPct>=limits.drawdownBreakerPct };
 }
 
 export async function GET(request:Request) {
@@ -80,7 +127,8 @@ export async function GET(request:Request) {
     if (!portfolio) return Response.json({ portfolio:null, orders:orders.results ?? [], positions:[], summary:null, marketRules:marketRulesForClient() });
     const state = await portfolioState(db, portfolio);
     const summary = { baseCurrency:String(portfolio.base_currency), cash:Number(portfolio.cash), marketValue:Number(state.marketValue.toFixed(2)), equity:Number(state.equity.toFixed(2)),
-      unrealizedPnl:Number(state.positions.reduce((sum,row) => sum + row.unrealized_pnl_base, 0).toFixed(2)), drawdownPct:Number(state.drawdownPct.toFixed(2)), exposuresByMarket:state.exposuresByMarket };
+      unrealizedPnl:Number(state.positions.reduce((sum,row) => sum + Number(row.unrealized_pnl_base), 0).toFixed(2)), drawdownPct:Number(state.drawdownPct.toFixed(2)),
+      exposuresByMarket:state.exposuresByMarket,exposuresBySector:state.exposuresBySector,adviceCounts:state.adviceCounts,newBuysPaused:state.newBuysPaused };
     return Response.json({ portfolio, orders:orders.results ?? [], positions:state.positions, summary, marketRules:marketRulesForClient() });
   } catch (error) { return paperError("PORTFOLIO_UNAVAILABLE", 503, {}, error); }
 }

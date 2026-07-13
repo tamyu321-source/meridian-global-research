@@ -34,8 +34,19 @@ test("all supported locales expose core portfolio copy", () => {
     assert.notEqual(tx(locale,"reanalysisBuyBlocked"), "");
     assert.match(tx(locale,"refreshComplete",{updated:12,failed:0}), /12/);
     assert.notEqual(tx(locale,"refreshPositions"), "");
+    assert.notEqual(tx(locale,"holdingAdvice"), "");
+    assert.notEqual(tx(locale,"holdingAdviceNote"), "");
+    assert.notEqual(tx(locale,"recommendedSell"), "");
+    assert.notEqual(tx(locale,"holdingDisclaimer"), "");
     assert.match(tx(locale,"portfolioQuotesUpdated",{updated:2,failed:0}), /2/);
   }
+});
+
+test("holding actions and evidence are localized", () => {
+  assert.equal(codeText("zh-TW","REVIEW"), "檢查資料");
+  assert.equal(codeText("zh-CN","HOLDING_STOP_TRIGGERED"), "现价已触及 ATR 止损");
+  assert.equal(codeText("ja","HOLDING_TARGET1_REACHED"), "第1利益目標に到達しました");
+  assert.equal(codeText("ko","HOLDING_PLAN_VALID"), "추세와 위험 조건이 유효합니다");
 });
 
 test("a quote outside the analyzed entry zone has a localized paper-buy error", () => {
