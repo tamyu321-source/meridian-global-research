@@ -33,5 +33,12 @@ export async function POST(request: Request) {
     db.prepare("UPDATE analysis_jobs SET github_run_id=COALESCE(?,github_run_id),github_run_url=COALESCE(?,github_run_url),updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(body.githubRunId ?? null, body.githubRunUrl ?? null, body.jobId),
     db.prepare("INSERT INTO ingest_events (idempotency_key,provider,captured_at,object_key,record_count,status,created_at) VALUES (?,'github-progress',?,?,1,'accepted',CURRENT_TIMESTAMP)").bind(idempotencyKey, new Date().toISOString(), body.componentId),
   ]);
-  return Response.json({ accepted: true, duplicate: false, job: await reconcileAnalysisJob(db, body.jobId) }, { status: 202 });
+  // The progress write above is the durable contract. Job reconciliation is a
+  // derived view and will be retried by the next heartbeat or status read, so a
+  // transient read/write contention here must not turn an accepted heartbeat
+  // into HTTP 500 and abort a long-running analysis worker.
+  let job = null;
+  try { job = await reconcileAnalysisJob(db, body.jobId); }
+  catch (error) { console.warn("analysis progress reconciliation deferred", error instanceof Error ? error.message : "unknown error"); }
+  return Response.json({ accepted: true, duplicate: false, job }, { status: 202 });
 }

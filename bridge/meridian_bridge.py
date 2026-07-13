@@ -26,11 +26,11 @@ from datetime import datetime, timezone
 try:
     from .cache import MarketCache
     from .model_v21 import BENCHMARK_SYMBOLS, CONFIG, CONFIG_HASH, MODEL_VERSION, build_market_context, model_identity, number, rank_snapshots, raw_factors
-    from .signed_request import signed_json as _signed_json
+    from .signed_request import is_retryable_request_error, signed_json as _signed_json
 except ImportError:
     from cache import MarketCache
     from model_v21 import BENCHMARK_SYMBOLS, CONFIG, CONFIG_HASH, MODEL_VERSION, build_market_context, model_identity, number, rank_snapshots, raw_factors
-    from signed_request import signed_json as _signed_json
+    from signed_request import is_retryable_request_error, signed_json as _signed_json
 
 MARKETS = ("US", "CN", "HK", "TW", "JP", "KR", "SG")
 MARKET = {
@@ -289,7 +289,15 @@ class ProgressReporter:
         requested = {"total": int(total), "processed": int(processed), "updated": int(updated), "failed": int(failed)}
         self.counts = {key: max(self.counts[key], value) for key, value in requested.items()}
         payload = {"jobId":self.job_id,"componentId":self.component_id,"status":status,"phase":phase,**self.counts,"scanId":scan_id,"githubRunId":os.getenv("GITHUB_RUN_ID"),"githubRunUrl":f"{os.getenv('GITHUB_SERVER_URL','https://github.com')}/{os.getenv('GITHUB_REPOSITORY','')}/actions/runs/{os.getenv('GITHUB_RUN_ID','')}" if os.getenv("GITHUB_RUN_ID") else None,"errorCode":error_code,"errorDetail":str(error_detail)[:800] if error_detail else None}
-        return _signed_json(self.endpoint + "/api/ingest/scan-progress", self.secret, payload, f"progress-{self.component_id}-{self.sequence:05d}", self.token)
+        try:
+            return _signed_json(self.endpoint + "/api/ingest/scan-progress", self.secret, payload, f"progress-{self.component_id}-{self.sequence:05d}", self.token)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+            # A temporary heartbeat outage must not discard an otherwise valid,
+            # expensive scan. Rankings uploads and terminal reports stay strict.
+            if status != "RUNNING" or not is_retryable_request_error(exc):
+                raise
+            print(json.dumps({"status":"warning","stage":"progress","phase":phase,"type":type(exc).__name__,"message":str(exc)}, ensure_ascii=False), flush=True)
+            return None
 
 
 def restore_history_artifact(endpoint, secret, token, cache, market, asset_type):

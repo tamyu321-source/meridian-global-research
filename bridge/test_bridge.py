@@ -2,6 +2,7 @@ import copy
 import os
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 from bridge.cache import MarketCache
@@ -28,6 +29,20 @@ class BridgeUnitTests(unittest.TestCase):
         self.assertEqual(payload["processed"],100)
         self.assertEqual(payload["updated"],129)
         self.assertEqual(payload["failed"],11)
+
+    def test_temporary_running_progress_failure_does_not_abort_scan(self):
+        reporter=ProgressReporter("https://example.test","secret","token","job","component")
+        temporary=urllib.error.HTTPError("https://example.test",500,"temporary",{},None)
+        with patch("bridge.meridian_bridge._signed_json",side_effect=temporary), patch("builtins.print") as output:
+            self.assertIsNone(reporter.report("RUNNING","HISTORY",500,25,20,0,"scan"))
+        output.assert_called_once()
+
+    def test_auth_progress_failure_remains_fatal(self):
+        reporter=ProgressReporter("https://example.test","secret","token","job","component")
+        unauthorized=urllib.error.HTTPError("https://example.test",401,"unauthorized",{},None)
+        with patch("bridge.meridian_bridge._signed_json",side_effect=unauthorized):
+            with self.assertRaises(urllib.error.HTTPError):
+                reporter.report("RUNNING","HISTORY",500,25,20,0,"scan")
 
     def test_number_rejects_missing_and_nan(self):
         self.assertEqual(number(None), 0); self.assertEqual(number("nan"), 0); self.assertEqual(number("12.5"), 12.5)
