@@ -26,7 +26,7 @@ export async function GET(request: Request) {
         return true;
       });
       return Response.json({
-        rankings, meta: { mode:"SHADOW", validationStatus:"SHADOW", backtestStatus:"PROVISIONAL_BACKTEST", formalEligible:false, primaryFeed:persisted.scan.provider, discovery:"full_universe_bridge", ibkrConnected:false, persistence:"available", markets, errors:[], generatedAt:persisted.scan.completedAt ?? persisted.scan.startedAt, scan:persisted.scan },
+        rankings, meta: { mode:"SHADOW", validationStatus:"SHADOW", backtestStatus:"PROVISIONAL_BACKTEST", formalEligible:false, primaryFeed:persisted.scan.provider, discovery:"full_universe_bridge", ibkrConnected:false, persistence:"available", markets, errors:[], generatedAt:persisted.scan.completedAt ?? persisted.scan.startedAt, scan:persisted.scan, analysisBuckets:persisted.buckets, mixedAnalysisTimes:persisted.mixedAnalysisTimes },
       }, { headers:{ "Cache-Control":"private, no-store" } });
     }
     const scanCount = marketParam === "ALL" ? 6 : 16;

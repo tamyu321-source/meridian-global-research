@@ -28,8 +28,17 @@ test("all supported locales expose core portfolio copy", () => {
     assert.notEqual(tx(locale,"marketRules"), "");
     assert.notEqual(tx(locale,"orderHistory"), "");
     assert.notEqual(tx(locale,"refreshQuotes"), "");
+    assert.notEqual(tx(locale,"fullAnalysis"), "");
+    assert.notEqual(tx(locale,"fullAnalysisConfirmBody"), "");
+    assert.notEqual(tx(locale,"analysisCloudMissing"), "");
+    assert.notEqual(tx(locale,"reanalysisBuyBlocked"), "");
     assert.match(tx(locale,"refreshComplete",{updated:12,failed:0}), /12/);
     assert.notEqual(tx(locale,"refreshPositions"), "");
     assert.match(tx(locale,"portfolioQuotesUpdated",{updated:2,failed:0}), /2/);
   }
+});
+
+test("a quote outside the analyzed entry zone has a localized paper-buy error", () => {
+  assert.equal(apiErrorText("zh-TW",{errorCode:"PRICE_OUTSIDE_ENTRY_ZONE"}), "最新價格已離開分析進場區，請先執行完整分析再模擬買進。");
+  assert.match(apiErrorText("ja",{errorCode:"PRICE_OUTSIDE_ENTRY_ZONE"}), /完全分析/);
 });

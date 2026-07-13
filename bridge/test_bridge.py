@@ -1,5 +1,8 @@
+import os
+import tempfile
 import unittest
 
+from bridge.cache import MarketCache
 from bridge.meridian_bridge import _symbol_matches
 from bridge.model_v2 import CONFIG_HASH, MODEL_VERSION, number, rank_snapshots, raw_factors
 
@@ -34,6 +37,19 @@ class BridgeUnitTests(unittest.TestCase):
     def test_daily_buy_cap_is_enforced(self):
         universe=[fixture(f"S{i}",.2+i*.005) for i in range(8)] + [fixture(f"E{i}",.2+i*.005,"ETF") for i in range(4)]
         rows=rank_snapshots(universe); self.assertLessEqual(sum(row["action"]=="BUY" and row["assetType"]=="STOCK" for row in rows),3); self.assertLessEqual(sum(row["action"]=="BUY" and row["assetType"]=="ETF" for row in rows),1)
+
+    def test_market_parquet_can_restore_asset_specific_history(self):
+        with tempfile.TemporaryDirectory() as source_root, tempfile.TemporaryDirectory() as restore_root:
+            source=MarketCache(source_root); restored=MarketCache(restore_root)
+            try:
+                snapshot=fixture("PARQUET")
+                source.store_history(snapshot)
+                path=source.export_market_parquet("US","scan-fixture","STOCK")
+                self.assertTrue(os.path.exists(path))
+                self.assertEqual(restored.import_history_parquet(path,"US","STOCK"),300)
+                self.assertEqual(len(restored.load_history("US:PARQUET")),300)
+            finally:
+                source.close(); restored.close()
 
 
 if __name__ == "__main__": unittest.main()

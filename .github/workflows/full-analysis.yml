@@ -1,0 +1,120 @@
+name: Meridian full analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Sites analysis job id
+        required: true
+        type: string
+      market_scope:
+        description: Requested market scope
+        required: true
+        type: string
+      asset_scope:
+        description: Requested asset scope
+        required: true
+        type: string
+      components_json:
+        description: Normalized analysis components
+        required: true
+        type: string
+  schedule:
+    - cron: "47 14 * * 1-5"
+      timezone: "Asia/Taipei"
+    - cron: "47 16 * * 1-5"
+      timezone: "Asia/Tokyo"
+    - cron: "49 16 * * 1-5"
+      timezone: "Asia/Seoul"
+    - cron: "51 16 * * 1-5"
+      timezone: "Asia/Shanghai"
+    - cron: "53 17 * * 1-5"
+      timezone: "Asia/Hong_Kong"
+    - cron: "55 18 * * 1-5"
+      timezone: "Asia/Singapore"
+    - cron: "57 17 * * 1-5"
+      timezone: "America/New_York"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: meridian-analysis-${{ inputs.job_id || github.event.schedule }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      job_id: ${{ steps.scope.outputs.job_id }}
+      components_json: ${{ steps.scope.outputs.components_json }}
+      skip: ${{ steps.scope.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - id: scope
+        env:
+          MERIDIAN_ENDPOINT: ${{ secrets.MERIDIAN_ENDPOINT }}
+          INGEST_HMAC_SECRET: ${{ secrets.INGEST_HMAC_SECRET }}
+          OAI_SITES_BYPASS_TOKEN: ${{ secrets.OAI_SITES_BYPASS_TOKEN }}
+          MANUAL_JOB_ID: ${{ inputs.job_id }}
+          MANUAL_COMPONENTS_JSON: ${{ inputs.components_json }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+        run: >-
+          python bridge/cloud_schedule.py prepare
+          --endpoint "$MERIDIAN_ENDPOINT"
+          --secret "$INGEST_HMAC_SECRET"
+          --token "$OAI_SITES_BYPASS_TOKEN"
+          --cron "$EVENT_SCHEDULE"
+          --manual-job-id "$MANUAL_JOB_ID"
+          --manual-components-json "${MANUAL_COMPONENTS_JSON:-[]}"
+
+  analyze:
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true' && needs.prepare.outputs.components_json != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        component: ${{ fromJSON(needs.prepare.outputs.components_json) }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: bridge/requirements-cloud.txt
+      - run: python -m pip install --requirement bridge/requirements-cloud.txt
+      - name: Run canonical v2 model
+        env:
+          MERIDIAN_ENDPOINT: ${{ secrets.MERIDIAN_ENDPOINT }}
+          INGEST_HMAC_SECRET: ${{ secrets.INGEST_HMAC_SECRET }}
+          OAI_SITES_BYPASS_TOKEN: ${{ secrets.OAI_SITES_BYPASS_TOKEN }}
+        run: >-
+          python -m bridge.meridian_bridge
+          --endpoint "$MERIDIAN_ENDPOINT"
+          --secret "$INGEST_HMAC_SECRET"
+          --sites-token "$OAI_SITES_BYPASS_TOKEN"
+          --markets "${{ matrix.component.market }}"
+          --asset-types "${{ matrix.component.assetType }}"
+          --job-id "${{ matrix.component.jobId }}"
+          --component-id "${{ matrix.component.id }}"
+          --workers 12
+      - name: Report abnormal termination
+        if: failure()
+        env:
+          MERIDIAN_ENDPOINT: ${{ secrets.MERIDIAN_ENDPOINT }}
+          INGEST_HMAC_SECRET: ${{ secrets.INGEST_HMAC_SECRET }}
+          OAI_SITES_BYPASS_TOKEN: ${{ secrets.OAI_SITES_BYPASS_TOKEN }}
+        run: >-
+          python bridge/cloud_schedule.py fail
+          --endpoint "$MERIDIAN_ENDPOINT"
+          --secret "$INGEST_HMAC_SECRET"
+          --token "$OAI_SITES_BYPASS_TOKEN"
+          --job-id "${{ matrix.component.jobId }}"
+          --component-id "${{ matrix.component.id }}"

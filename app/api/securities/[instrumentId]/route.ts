@@ -23,7 +23,9 @@ export async function GET(request: Request, context: { params: Promise<{ instrum
     if (security) {
       try {
         const live = await fetchSymbolSnapshot(symbol, market, security.name, security.assetType);
-        return Response.json({ security, bars:live.bars.slice(-260), scan:persisted?.scan });
+        const price = live.price;
+        const tradePlanState = price >= security.tradePlan.entryLow && price <= security.tradePlan.entryHigh ? "CURRENT" : "REANALYSIS_REQUIRED";
+        return Response.json({ security:{ ...security, price, changePct:live.previousClose ? Number((((price-live.previousClose)/live.previousClose)*100).toFixed(2)) : 0, source:live.source, freshness:live.freshness, capturedAt:live.capturedAt, tradePlanState }, bars:live.bars.slice(-260), scan:persisted?.scan });
       } catch { return Response.json({ security, bars:[], scan:persisted?.scan }); }
     }
     const snapshot = await fetchSymbolSnapshot(symbol, market, symbol, assetType);

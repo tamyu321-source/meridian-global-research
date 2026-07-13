@@ -8,6 +8,11 @@ type RuntimeEnv = {
   INGEST_HMAC_SECRET?: string;
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
+  GITHUB_ACTIONS_TOKEN?: string;
+  GITHUB_REPOSITORY?: string;
+  GITHUB_WORKFLOW_FILE?: string;
+  GITHUB_WORKFLOW_REF?: string;
+  MERIDIAN_OWNER_EMAIL?: string;
 };
 
 export function runtimeEnv() { return env as unknown as RuntimeEnv; }

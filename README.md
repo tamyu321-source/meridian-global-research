@@ -1,8 +1,8 @@
 # Meridian Global Research
 
 The owner-only Sites application for seven-market shadow signals, paper trading,
-data health, and provisional walk-forward backtests. Paper orders refresh public
-quotes older than 15 minutes before server-side execution and risk validation.
+data health, and provisional walk-forward backtests. It deliberately separates
+fast quote updates from the canonical five-year Python analysis.
 
 The application runs on
 [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
@@ -22,14 +22,39 @@ npm run build
 
 This starter does not use `wrangler.jsonc`.
 
-## Included Shape
+## Analysis architecture
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
+- **Update latest quotes** refreshes visible prices and paper-position P&L. It
+  never changes a model score or trade plan.
+- **Run full analysis** creates durable D1 jobs and dispatches
+  `.github/workflows/full-analysis.yml`. The runner restores the last successful
+  market/asset Parquet from R2, downloads a seven-day overlap (or the first five
+  years), and invokes `bridge/model_v2.py` through `bridge/meridian_bridge.py`.
+- Stock and ETF buckets activate independently only after at least 95% of the
+  discovered pool is analyzed and no major corporate-action anomaly exists.
+- Public-source output is permanently `SHADOW`; no broker order is submitted.
+- A new paper BUY is blocked when the latest quote has left the original entry
+  zone. Paper SELL remains available.
+
+## Cloud configuration
+
+Sites runtime variables:
+
+- `GITHUB_REPOSITORY=owner/meridian-global-research`
+- `GITHUB_WORKFLOW_FILE=full-analysis.yml`
+- `GITHUB_WORKFLOW_REF=main`
+- `GITHUB_ACTIONS_TOKEN`: fine-grained token limited to this repository with
+  Actions write permission
+- `INGEST_HMAC_SECRET` and optional `MERIDIAN_OWNER_EMAIL`
+
+GitHub Actions Secrets:
+
+- `MERIDIAN_ENDPOINT`: private Sites deployment URL
+- `INGEST_HMAC_SECRET`: must match Sites
+- `OAI_SITES_BYPASS_TOKEN`: private service token for the owner-only deployment
+
+Never commit these values. The workflow logs only market/coverage information.
+Fork and pull-request workflows do not receive repository Secrets.
 
 ## Workspace Auth Headers
 
@@ -93,7 +118,7 @@ actions tied to the current ChatGPT user. Leave public content anonymous.
 
 - `npm run dev`: start local development
 - `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
+- `npm test`: build and run contract, localization, risk and rendered-route tests
 - `npm run db:generate`: generate Drizzle migrations after schema changes
 
 ## Learn More

@@ -1,6 +1,8 @@
-# Meridian Windows full-universe bridge
+# Meridian canonical full-analysis bridge
 
-The website no longer treats a fast, on-demand shortlist as a comprehensive scan. This companion process performs the complete background analysis and uploads an auditable completed batch to D1/R2.
+The website never treats a fast quote refresh as a comprehensive scan. GitHub
+Actions runs this Python bridge for manual and after-close analysis; Windows can
+still run the same command as an operator fallback.
 
 Default coverage per run:
 
@@ -12,7 +14,20 @@ Default coverage per run:
 - `model_v2.py` is the only scoring implementation used by both scanning and backtesting.
 - Public data remains `delayed`; BUY is always `SHADOW`, with at most 3 stocks and 1 ETF per market per day.
 
-## Run once
+## GitHub Actions
+
+`../.github/workflows/full-analysis.yml` expands a request into market/asset
+buckets with at most two running concurrently. Progress is signed and reported
+as `DISCOVERY → HISTORY → ENRICHMENT → SCORING → UPLOADING → COMPLETE`.
+Each scheduled trigger also attempts any earlier market whose local after-close
+time has passed; D1 skips buckets already completed for that local trading day.
+
+The runner installs versions locked by `requirements-cloud.txt`, restores only
+Parquet attached to a previously successful scan, applies a seven-day overlap,
+and uploads a new immutable artifact. A failed bucket retains the last active
+output.
+
+## Run once from Windows (operator fallback)
 
 Set the variables in `.env.example` in the Windows user environment, then run:
 
@@ -23,12 +38,13 @@ py bridge\meridian_bridge.py
 
 For a private Sites deployment, set `OAI_SITES_BYPASS_TOKEN` to the private service token. The HMAC secret must match the Sites `INGEST_HMAC_SECRET` value.
 
-## Keep it running
+## Optional Windows schedule
 
 ```powershell
 py bridge\meridian_bridge.py --loop
 ```
 
-Use Windows Task Scheduler to start at logon, restart on failure, and run under a dedicated Windows account. The default interval is one day. Each completed run records discovered, analyzed, failed, and fallback counts for every market.
+GitHub Actions is the production scheduler. Windows Task Scheduler is optional
+and uses the same HMAC ingestion path and canonical model.
 
 Run `py bridge\backtest.py` for the same-model walk-forward test. Public-source history has survivorship bias, so its status is permanently `PROVISIONAL_BACKTEST` and can never unlock `FORMAL`.

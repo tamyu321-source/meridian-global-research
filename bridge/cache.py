@@ -95,12 +95,37 @@ class MarketCache:
         self.db.execute("""INSERT INTO security_profiles VALUES (?,?,CURRENT_TIMESTAMP)
             ON CONFLICT(instrument_id) DO UPDATE SET profile_json=excluded.profile_json,fetched_at=excluded.fetched_at""", [instrument_id, json.dumps(profile, ensure_ascii=False, separators=(",", ":"))])
 
-    def export_market_parquet(self, market, scan_id):
+    def import_history_parquet(self, path, market=None, asset_type=None):
+        if not path or not os.path.exists(path):
+            return 0
+        escaped = os.path.abspath(path).replace("'", "''")
+        clauses, values = [], []
+        if market:
+            clauses.append("market=?"); values.append(market)
+        if asset_type:
+            clauses.append("asset_type=?"); values.append(asset_type)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        count = self.db.execute(f"SELECT count(*) FROM read_parquet('{escaped}'){where}", values).fetchone()[0]
+        self.db.execute("BEGIN TRANSACTION")
+        try:
+            self.db.execute(f"""INSERT INTO history SELECT instrument_id,symbol,market,asset_type,timestamp,open,high,low,close,adj_close,volume,dividend,split_ratio,source,fetched_at FROM read_parquet('{escaped}'){where}
+                ON CONFLICT(instrument_id,timestamp) DO UPDATE SET open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,adj_close=excluded.adj_close,volume=excluded.volume,dividend=excluded.dividend,split_ratio=excluded.split_ratio,source=excluded.source,fetched_at=excluded.fetched_at""", values)
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        return int(count)
+
+    def export_market_parquet(self, market, scan_id, asset_type=None):
         directory = os.path.join(self.parquet_root, f"market={market}")
         os.makedirs(directory, exist_ok=True)
-        path = os.path.join(directory, f"scan={scan_id}.parquet")
+        suffix = f"-{asset_type.lower()}" if asset_type else ""
+        path = os.path.join(directory, f"scan={scan_id}{suffix}.parquet")
         escaped = path.replace("'", "''")
-        self.db.execute(f"COPY (SELECT * FROM history WHERE market=?) TO '{escaped}' (FORMAT PARQUET, COMPRESSION ZSTD)", [market])
+        if asset_type:
+            self.db.execute(f"COPY (SELECT * FROM history WHERE market=? AND asset_type=?) TO '{escaped}' (FORMAT PARQUET, COMPRESSION ZSTD)", [market, asset_type])
+        else:
+            self.db.execute(f"COPY (SELECT * FROM history WHERE market=?) TO '{escaped}' (FORMAT PARQUET, COMPRESSION ZSTD)", [market])
         return path
 
     def save_raw(self, market, symbol, payload, scan_id):

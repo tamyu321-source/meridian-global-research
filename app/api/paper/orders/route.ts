@@ -10,10 +10,10 @@ export const dynamic = "force-dynamic";
 
 type DbRow = Record<string, unknown>;
 
-type PaperErrorCode = "SIGN_IN_REQUIRED" | "SERVICE_UNAVAILABLE" | "INVALID_ORDER" | "SETUP_REQUIRED" | "NO_QUOTE" | "MARKET_QUANTITY_RULE" | "STALE_QUOTE" | "DRAWDOWN_BREAKER" | "CN_T_PLUS_ONE" | "POSITION_LIMIT" | "MARKET_LIMIT" | "SECTOR_LIMIT" | "INSUFFICIENT_CASH" | "PORTFOLIO_UNAVAILABLE" | "PAPER_ORDER_FAILED";
+type PaperErrorCode = "SIGN_IN_REQUIRED" | "SERVICE_UNAVAILABLE" | "INVALID_ORDER" | "SETUP_REQUIRED" | "NO_QUOTE" | "MARKET_QUANTITY_RULE" | "STALE_QUOTE" | "PRICE_OUTSIDE_ENTRY_ZONE" | "DRAWDOWN_BREAKER" | "CN_T_PLUS_ONE" | "POSITION_LIMIT" | "MARKET_LIMIT" | "SECTOR_LIMIT" | "INSUFFICIENT_CASH" | "PORTFOLIO_UNAVAILABLE" | "PAPER_ORDER_FAILED";
 
 const paperErrorFallback:Record<PaperErrorCode,string> = {
-  SIGN_IN_REQUIRED:"Sign in required", SERVICE_UNAVAILABLE:"Portfolio service unavailable", INVALID_ORDER:"Invalid paper order", SETUP_REQUIRED:"Complete portfolio setup before paper trading", NO_QUOTE:"No quote available", MARKET_QUANTITY_RULE:"Quantity violates market trading-unit rules", STALE_QUOTE:"Stale quote blocks paper execution", DRAWDOWN_BREAKER:"Portfolio drawdown breaker reached", CN_T_PLUS_ONE:"Sell quantity exceeds currently sellable A-share position", POSITION_LIMIT:"Single-position limit exceeded", MARKET_LIMIT:"Market exposure limit exceeded", SECTOR_LIMIT:"Sector exposure limit exceeded", INSUFFICIENT_CASH:"Insufficient paper cash after FX and costs", PORTFOLIO_UNAVAILABLE:"Paper portfolio unavailable", PAPER_ORDER_FAILED:"Paper order failed",
+  SIGN_IN_REQUIRED:"Sign in required", SERVICE_UNAVAILABLE:"Portfolio service unavailable", INVALID_ORDER:"Invalid paper order", SETUP_REQUIRED:"Complete portfolio setup before paper trading", NO_QUOTE:"No quote available", MARKET_QUANTITY_RULE:"Quantity violates market trading-unit rules", STALE_QUOTE:"Stale quote blocks paper execution", PRICE_OUTSIDE_ENTRY_ZONE:"Latest price is outside the analyzed entry zone", DRAWDOWN_BREAKER:"Portfolio drawdown breaker reached", CN_T_PLUS_ONE:"Sell quantity exceeds currently sellable A-share position", POSITION_LIMIT:"Single-position limit exceeded", MARKET_LIMIT:"Market exposure limit exceeded", SECTOR_LIMIT:"Sector exposure limit exceeded", INSUFFICIENT_CASH:"Insufficient paper cash after FX and costs", PORTFOLIO_UNAVAILABLE:"Paper portfolio unavailable", PAPER_ORDER_FAILED:"Paper order failed",
 };
 
 function paperError(errorCode:PaperErrorCode, status:number, errorParams:Record<string,string|number> = {}, detail?:unknown) {
@@ -106,6 +106,16 @@ export async function POST(request:Request) {
     if (!paperQuoteIsExecutable(String(quote.captured_at), String(quote.freshness))) return paperError("STALE_QUOTE", 409);
     const session = marketSessionState(market);
     const price = Number(quote.price), grossLocal = price * quantity;
+    if (side === "BUY") {
+      const activeSignal = await db.prepare(`SELECT sig.trade_plan_json FROM active_scan_outputs out
+        JOIN signals sig ON sig.scan_id=out.scan_id JOIN securities sec ON sec.instrument_id=sig.instrument_id
+        WHERE out.model_version=sig.model_version AND out.market=sec.market AND out.asset_type=sec.asset_type AND sig.instrument_id=? LIMIT 1`).bind(payload.instrumentId).first<{ trade_plan_json:string }>();
+      if (activeSignal) {
+        const plan = JSON.parse(activeSignal.trade_plan_json) as { entryLow?:number; entryHigh?:number };
+        const entryLow = Number(plan.entryLow ?? 0), entryHigh = Number(plan.entryHigh ?? 0);
+        if (entryLow > 0 && entryHigh > 0 && (price < entryLow || price > entryHigh)) return paperError("PRICE_OUTSIDE_ENTRY_ZONE", 409, { entryLow, entryHigh, price });
+      }
+    }
     const costs = estimateMarketCosts(market, assetType, side, grossLocal, quantity);
     const fx = await fetchFxRate(String(quote.currency), String(portfolio.base_currency));
     const grossBase = grossLocal * fx.rate, feesBase = costs.total * fx.rate;

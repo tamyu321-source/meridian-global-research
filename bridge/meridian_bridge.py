@@ -186,7 +186,7 @@ def _snapshot(market, candidate, payload):
     return {"instrumentId":f"{market}:{symbol}","symbol":symbol,"name":candidate.get("shortName") or candidate.get("longName") or symbol,"market":market,"exchange":candidate.get("fullExchangeName") or meta.get("fullExchangeName") or MARKET[market]["exchange"],"currency":candidate.get("currency") or meta.get("currency") or MARKET[market]["currency"],"assetType":asset_type,"sector":sector,"source":"Yahoo Finance chart (5y adjusted OHLCV)","sourceCount":1,"freshness":"delayed","capturedAt":datetime.now(timezone.utc).isoformat(),"bars":bars,"price":price,"previousClose":previous,"sourceWarnings":["PUBLIC_DELAYED_DATA"],"sourceConflicts":conflicts,"corporateActionAnomalies":anomalies,"etfStructure":structure}
 
 
-def collect_history(client, cache, market, candidates, scan_id, workers=6):
+def collect_history(client, cache, market, candidates, scan_id, workers=6, progress=None):
     snapshots, errors, failed_candidates = [], [], []
     def load(candidate):
         instrument_id = f"{market}:{candidate['symbol']}"; latest = cache.latest_timestamp(instrument_id)
@@ -195,8 +195,6 @@ def collect_history(client, cache, market, candidates, scan_id, workers=6):
         def cached_snapshot(warning):
             asset_type = candidate["quoteType"]; symbol = candidate["symbol"]
             return {"instrumentId":instrument_id,"symbol":symbol,"name":candidate.get("shortName") or candidate.get("longName") or symbol,"market":market,"exchange":candidate.get("fullExchangeName") or MARKET[market]["exchange"],"currency":candidate.get("currency") or MARKET[market]["currency"],"assetType":asset_type,"sector":candidate.get("sector") or candidate.get("industry") or "Unclassified","source":"DuckDB cached Yahoo adjusted OHLCV","sourceCount":1,"freshness":"delayed","capturedAt":datetime.fromtimestamp(latest,timezone.utc).isoformat(),"bars":prior,"price":prior[-1]["close"],"previousClose":prior[-2]["close"],"sourceWarnings":[warning],"sourceConflicts":[],"corporateActionAnomalies":[],"etfStructure":{"score":50,"missingNonCritical":asset_type == "ETF","excluded":False},"_cacheOnly":True}
-        if latest and len(prior) >= CONFIG["minimumTradingDays"] and time.time() - latest < 4 * 86400:
-            return cached_snapshot("LOCAL_INCREMENTAL_CACHE")
         try:
             payload = client.chart(candidate["symbol"], period1)
             cache.save_raw(market, candidate["symbol"], payload, scan_id)
@@ -211,6 +209,7 @@ def collect_history(client, cache, market, candidates, scan_id, workers=6):
         return fresh
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = {pool.submit(load, candidate):candidate for candidate in candidates}
+        completed = 0
         for future in as_completed(futures):
             candidate = futures[future]
             try:
@@ -218,6 +217,8 @@ def collect_history(client, cache, market, candidates, scan_id, workers=6):
             except Exception as exc:
                 errors.append({"market":market,"symbol":candidate["symbol"],"stage":"history","error":type(exc).__name__})
                 failed_candidates.append(candidate)
+            completed += 1
+            if progress and (completed % 25 == 0 or completed == len(candidates)): progress(completed, len(candidates), len(snapshots), 0)
     # A calm second pass recovers transient provider throttles without weakening coverage.
     recovered = set()
     for candidate in failed_candidates:
@@ -276,32 +277,69 @@ def _signed_json(url, secret, payload, key, token="", timeout=90):
     with urllib.request.urlopen(urllib.request.Request(url, data=body, method="POST", headers=headers), timeout=timeout) as response: return json.loads(response.read().decode())
 
 
-def upload_artifact(endpoint, secret, token, path, object_key):
+class ProgressReporter:
+    def __init__(self, endpoint, secret, token, job_id="", component_id=""):
+        self.endpoint, self.secret, self.token, self.job_id, self.component_id = endpoint.rstrip("/"), secret, token, job_id, component_id
+        self.sequence = 0
+
+    def report(self, status, phase, total=0, processed=0, updated=0, failed=0, scan_id=None, error_code=None, error_detail=None):
+        if not self.job_id or not self.component_id: return None
+        self.sequence += 1
+        payload = {"jobId":self.job_id,"componentId":self.component_id,"status":status,"phase":phase,"total":int(total),"processed":int(processed),"updated":int(updated),"failed":int(failed),"scanId":scan_id,"githubRunId":os.getenv("GITHUB_RUN_ID"),"githubRunUrl":f"{os.getenv('GITHUB_SERVER_URL','https://github.com')}/{os.getenv('GITHUB_REPOSITORY','')}/actions/runs/{os.getenv('GITHUB_RUN_ID','')}" if os.getenv("GITHUB_RUN_ID") else None,"errorCode":error_code,"errorDetail":str(error_detail)[:800] if error_detail else None}
+        return _signed_json(self.endpoint + "/api/ingest/scan-progress", self.secret, payload, f"progress-{self.component_id}-{self.sequence:05d}", self.token)
+
+
+def restore_history_artifact(endpoint, secret, token, cache, market, asset_type):
+    payload = {"modelVersion":MODEL_VERSION,"market":market,"assetType":asset_type}
+    body = json.dumps(payload, separators=(",", ":")).encode(); timestamp = datetime.now(timezone.utc).isoformat()
+    signature = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
+    headers = {"Content-Type":"application/json","X-Meridian-Timestamp":timestamp,"X-Meridian-Signature":signature,"User-Agent":USER_AGENT}
+    if token: headers["OAI-Sites-Authorization"] = "Bearer " + token
+    request = urllib.request.Request(endpoint.rstrip("/") + "/api/ingest/artifacts/restore", data=body, method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            path = os.path.join(cache.root, f"restore-{market}-{asset_type}.parquet")
+            with open(path, "wb") as handle: handle.write(response.read())
+            return cache.import_history_parquet(path, market, asset_type)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404: return 0
+        raise
+
+
+def upload_artifact(endpoint, secret, token, path, object_key, market, asset_type, scan_id):
     with open(path, "rb") as handle: body = handle.read()
     timestamp = datetime.now(timezone.utc).isoformat(); signature = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
-    headers = {"Content-Type":"application/vnd.apache.parquet","X-Meridian-Timestamp":timestamp,"X-Meridian-Signature":signature,"X-Idempotency-Key":"artifact-" + hashlib.sha256(object_key.encode()).hexdigest()[:32],"X-Meridian-Object-Key":object_key,"User-Agent":USER_AGENT}
+    headers = {"Content-Type":"application/vnd.apache.parquet","X-Meridian-Timestamp":timestamp,"X-Meridian-Signature":signature,"X-Idempotency-Key":"artifact-" + hashlib.sha256(object_key.encode()).hexdigest()[:32],"X-Meridian-Object-Key":object_key,"X-Meridian-Market":market,"X-Meridian-Asset-Type":asset_type,"X-Meridian-Scan-Id":scan_id,"User-Agent":USER_AGENT}
     if token: headers["OAI-Sites-Authorization"] = "Bearer " + token
     with urllib.request.urlopen(urllib.request.Request(endpoint.rstrip("/") + "/api/ingest/artifacts", data=body, method="POST", headers=headers), timeout=180) as response: return json.loads(response.read().decode())
 
 
-def upload_rankings(endpoint, secret, token, scan, rankings):
+def upload_rankings(endpoint, secret, token, scan, rankings, job_id="", component_id=""):
     batches = list(_chunks(rankings, 150)) or [[]]
     for index, records in enumerate(batches):
         current = dict(scan); current["status"] = scan["status"] if index == len(batches) - 1 else "running"; current["completedAt"] = scan["completedAt"] if index == len(batches) - 1 else None
-        _signed_json(endpoint.rstrip("/") + "/api/ingest/rankings", secret, {"scan":current,"records":records,"batchIndex":index,"batchCount":len(batches),"model":model_identity()}, f"v2-{scan['id']}-{index:04d}", token)
+        _signed_json(endpoint.rstrip("/") + "/api/ingest/rankings", secret, {"scan":current,"records":records,"batchIndex":index,"batchCount":len(batches),"jobId":job_id or None,"componentId":component_id or None,"model":model_identity()}, f"v2-{scan['id']}-{index:04d}", token)
     return len(batches)
 
 
-def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_token="", workers=6):
+def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_token="", workers=6, asset_types=("STOCK","ETF"), job_id="", component_id=""):
     started = datetime.now(timezone.utc); scan_id = started.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]; today = started.date().isoformat()
+    asset_types = tuple(item for item in asset_types if item in ("STOCK","ETF"))
+    stock_target = stock_target if "STOCK" in asset_types else 0; etf_target = etf_target if "ETF" in asset_types else 0
+    reporter = ProgressReporter(endpoint, secret, sites_token, job_id, component_id)
     client, cache = YahooClient(), MarketCache(); all_snapshots, errors, coverage, parquet = [], [], {}, {}
+    total_target = len(markets) * (stock_target + etf_target)
     try:
+        reporter.report("RUNNING", "DISCOVERY", total_target, 0, 0, 0, scan_id)
         for market in markets:
             market_started = time.time()
+            for asset_type in asset_types: restore_history_artifact(endpoint, secret, sites_token, cache, market, asset_type)
             # Filter history eligibility before choosing the final 500+100 pool.
             candidates = discover_universe(client, market, max(stock_target, math.ceil(stock_target * 1.25)), max(etf_target, math.ceil(etf_target * 1.4)))
             cache.store_universe(market, candidates, MARKET[market]["universe"], today)
-            eligible, market_errors = collect_history(client, cache, market, candidates, scan_id, workers)
+            base_processed = sum(value.get("candidateCount", 0) for value in coverage.values())
+            reporter.report("RUNNING", "HISTORY", total_target, min(total_target, base_processed), len(all_snapshots), len(errors), scan_id)
+            eligible, market_errors = collect_history(client, cache, market, candidates, scan_id, workers, lambda processed,total,updated,failed: reporter.report("RUNNING", "HISTORY", total_target, min(total_target,base_processed+processed), len(all_snapshots)+updated, len(errors)+failed, scan_id))
             liquidity = {item["symbol"]:_candidate_liquidity(item) for item in candidates}
             eligible_stocks = sorted((item for item in eligible if item["assetType"] == "STOCK"), key=lambda item:liquidity.get(item["symbol"],0), reverse=True)
             eligible_etfs = sorted((item for item in eligible if item["assetType"] == "ETF"), key=lambda item:liquidity.get(item["symbol"],0), reverse=True)
@@ -310,32 +348,45 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
             snapshots = stocks + etfs
             cache.store_histories([item for item in eligible if not item.get("_cacheOnly")])
             all_snapshots.extend(snapshots); errors.extend(market_errors)
-            discovered_count = desired_stocks + desired_etfs; analyzed = len(snapshots); ratio = analyzed / discovered_count * 100 if discovered_count else 0
-            coverage[market] = {"stocksDiscovered":desired_stocks,"etfsDiscovered":desired_etfs,"targetStocks":stock_target,"targetEtfs":etf_target,"rawStocksDiscovered":sum(x["quoteType"] == "STOCK" for x in candidates),"rawEtfsDiscovered":sum(x["quoteType"] == "ETF" for x in candidates),"stocksAnalyzed":len(stocks),"etfsAnalyzed":len(etfs),"historyRejected":len(candidates)-len(eligible),"failed":len(market_errors),"coveragePct":round(ratio,2),"qualityGatePassed":discovered_count > 0 and ratio >= CONFIG["completionCoveragePct"],"universeSource":MARKET[market]["universe"],"seconds":round(time.time()-market_started,1)}
-            parquet[market] = cache.export_market_parquet(market, scan_id)
+            raw_stocks = sum(x["quoteType"] == "STOCK" for x in candidates); raw_etfs = sum(x["quoteType"] == "ETF" for x in candidates)
+            discovered_stocks = min(stock_target, raw_stocks); discovered_etfs = min(etf_target, raw_etfs)
+            discovered_count = discovered_stocks + discovered_etfs; analyzed = len(snapshots); ratio = analyzed / discovered_count * 100 if discovered_count else 0
+            coverage[market] = {"stocksDiscovered":discovered_stocks,"etfsDiscovered":discovered_etfs,"targetStocks":stock_target,"targetEtfs":etf_target,"rawStocksDiscovered":raw_stocks,"rawEtfsDiscovered":raw_etfs,"stocksAnalyzed":len(stocks),"etfsAnalyzed":len(etfs),"historyRejected":len(candidates)-len(eligible),"failed":len(market_errors),"candidateCount":len(candidates),"coveragePct":round(ratio,2),"qualityGatePassed":discovered_count > 0 and ratio >= CONFIG["completionCoveragePct"],"universeSource":MARKET[market]["universe"],"seconds":round(time.time()-market_started,1)}
+            for current_asset in asset_types: parquet[(market,current_asset)] = cache.export_market_parquet(market, scan_id, current_asset)
             print(json.dumps({"market":market,"coverage":coverage[market]}, ensure_ascii=False), flush=True)
+        reporter.report("RUNNING", "ENRICHMENT", total_target, total_target, len(all_snapshots), len(errors), scan_id)
         enrich_candidate_profiles(client, cache, all_snapshots)
+        reporter.report("RUNNING", "SCORING", total_target, total_target, len(all_snapshots), len(errors), scan_id)
         rankings = rank_snapshots(all_snapshots, allow_buy=True); completed = datetime.now(timezone.utc)
         source_conflicts = sum(len(item.get("sourceConflicts") or []) for item in all_snapshots); action_anomalies = sum(len(item.get("corporateActionAnomalies") or []) for item in all_snapshots)
-        complete = set(markets) == set(MARKETS) and all(coverage.get(market, {}).get("qualityGatePassed") for market in MARKETS) and action_anomalies == 0
+        complete = bool(markets) and all(coverage.get(market, {}).get("qualityGatePassed") for market in markets) and action_anomalies == 0
         status = "complete" if complete else "partial"
-        scan = {"id":scan_id,"provider":"Public exchange directories + Yahoo Finance adjusted OHLCV","modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"validationStatus":"SHADOW","status":status,"startedAt":started.isoformat(),"completedAt":completed.isoformat(),"requestedMarkets":markets,"targetStocksPerMarket":stock_target,"targetEtfsPerMarket":etf_target,"discoveredCount":sum(v["stocksDiscovered"]+v["etfsDiscovered"] for v in coverage.values()),"analyzedCount":len(rankings),"failedCount":len(errors),"fallbackCount":0,"coverage":coverage,"sourceConflicts":source_conflicts,"corporateActionAnomalies":action_anomalies,"qualityGatePassed":complete,"universeSnapshotDate":today}
-        batches = upload_rankings(endpoint, secret, sites_token, scan, rankings)
-        for market, path in parquet.items():
-            upload_artifact(endpoint, secret, sites_token, path, f"history/{MODEL_VERSION}/{scan_id}/{market}.parquet")
+        scan = {"id":scan_id,"provider":"Public exchange directories + Yahoo Finance adjusted OHLCV","modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"validationStatus":"SHADOW","status":status,"startedAt":started.isoformat(),"completedAt":completed.isoformat(),"requestedMarkets":markets,"requestedAssetTypes":list(asset_types),"jobId":job_id or None,"componentId":component_id or None,"targetStocksPerMarket":stock_target,"targetEtfsPerMarket":etf_target,"discoveredCount":sum(v["stocksDiscovered"]+v["etfsDiscovered"] for v in coverage.values()),"analyzedCount":len(rankings),"failedCount":len(errors),"fallbackCount":0,"coverage":coverage,"sourceConflicts":source_conflicts,"corporateActionAnomalies":action_anomalies,"qualityGatePassed":complete,"universeSnapshotDate":today}
+        reporter.report("RUNNING", "UPLOADING", total_target, total_target, len(rankings), len(errors), scan_id)
+        for (market,current_asset), path in parquet.items():
+            upload_artifact(endpoint, secret, sites_token, path, f"history/{MODEL_VERSION}/{scan_id}/{market}/{current_asset}.parquet", market, current_asset, scan_id)
+        batches = upload_rankings(endpoint, secret, sites_token, scan, rankings, job_id, component_id)
         result = {"scanId":scan_id,"status":status,"analyzed":len(rankings),"buyCount":sum(x["action"] == "BUY" for x in rankings),"failed":len(errors),"batches":batches,"seconds":round((completed-started).total_seconds(),1),"coverage":coverage}
+        reporter.report("COMPLETE" if complete else "FAILED", "COMPLETE" if complete else "UPLOADING", total_target, total_target, len(rankings), len(errors), scan_id, None if complete else "QUALITY_GATE_FAILED", None if complete else "Coverage or corporate-action quality gate failed")
         print(json.dumps(result, ensure_ascii=False), flush=True); return result
+    except Exception as exc:
+        try: reporter.report("FAILED", "UPLOADING", total_target, min(total_target,total_target), len(all_snapshots), max(len(errors),1), scan_id, type(exc).__name__, str(exc))
+        except Exception: pass
+        raise
     finally: cache.close()
 
 
 def main():
     load_local_env(); parser = argparse.ArgumentParser(description="Meridian v2 comprehensive public market bridge")
-    parser.add_argument("--endpoint", default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret", default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token", default=os.getenv("OAI_SITES_BYPASS_TOKEN", "")); parser.add_argument("--markets", default=",".join(MARKETS)); parser.add_argument("--stocks", type=int, default=int(os.getenv("MERIDIAN_STOCKS_PER_MARKET", "500"))); parser.add_argument("--etfs", type=int, default=int(os.getenv("MERIDIAN_ETFS_PER_MARKET", "100"))); parser.add_argument("--workers", type=int, default=int(os.getenv("MERIDIAN_HISTORY_WORKERS", "12"))); parser.add_argument("--loop", action="store_true"); args = parser.parse_args()
+    parser.add_argument("--endpoint", default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret", default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token", default=os.getenv("OAI_SITES_BYPASS_TOKEN", "")); parser.add_argument("--markets", default=",".join(MARKETS)); parser.add_argument("--asset-types", default="STOCK,ETF"); parser.add_argument("--job-id", default=os.getenv("MERIDIAN_JOB_ID", "")); parser.add_argument("--component-id", default=os.getenv("MERIDIAN_COMPONENT_ID", "")); parser.add_argument("--stocks", type=int, default=int(os.getenv("MERIDIAN_STOCKS_PER_MARKET", "500"))); parser.add_argument("--etfs", type=int, default=int(os.getenv("MERIDIAN_ETFS_PER_MARKET", "100"))); parser.add_argument("--workers", type=int, default=int(os.getenv("MERIDIAN_HISTORY_WORKERS", "12"))); parser.add_argument("--loop", action="store_true"); args = parser.parse_args()
     if not args.endpoint or not args.secret: parser.error("--endpoint and --secret are required")
     markets = [item.strip().upper() for item in args.markets.split(",") if item.strip().upper() in MARKETS]
+    asset_types = [item.strip().upper() for item in args.asset_types.split(",") if item.strip().upper() in ("STOCK","ETF")]
     while True:
-        try: run_full_scan(markets, max(1,args.stocks), max(0,args.etfs), args.endpoint, args.secret, args.sites_token, max(1,args.workers))
-        except Exception as exc: print(json.dumps({"status":"error","type":type(exc).__name__,"message":str(exc)}), flush=True)
+        try: run_full_scan(markets, max(1,args.stocks), max(0,args.etfs), args.endpoint, args.secret, args.sites_token, max(1,args.workers), asset_types, args.job_id, args.component_id)
+        except Exception as exc:
+            print(json.dumps({"status":"error","type":type(exc).__name__,"message":str(exc)}), flush=True)
+            if not args.loop: raise
         if not args.loop: break
         time.sleep(max(3600, int(os.getenv("MERIDIAN_INTERVAL_SECONDS", "86400"))))
 

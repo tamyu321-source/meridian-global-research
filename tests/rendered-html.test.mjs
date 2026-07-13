@@ -35,4 +35,8 @@ test("all primary product route entrypoints exist", async () => {
     assert.match(source, new RegExp(`view=\\"${path}\\"`));
   }
   await access(new URL("../app/api/paper/quotes/route.ts", import.meta.url));
+  await access(new URL("../app/api/scans/full/route.ts", import.meta.url));
+  await access(new URL("../app/api/ingest/scan-progress/route.ts", import.meta.url));
+  await access(new URL("../app/api/ingest/artifacts/restore/route.ts", import.meta.url));
+  await access(new URL("../.github/workflows/full-analysis.yml", import.meta.url));
 });

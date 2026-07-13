@@ -1,0 +1,32 @@
+name: Refresh exchange calendar snapshot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "19 3 1 * *"
+      timezone: "UTC"
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: bridge/requirements-cloud.txt
+      - run: python -m pip install --requirement bridge/requirements-cloud.txt
+      - run: python bridge/refresh_calendar.py
+      - name: Commit dated calendar evidence
+        run: |
+          if git diff --quiet -- bridge/calendars/calendar-snapshot.json; then exit 0; fi
+          git config user.name "meridian-calendar[bot]"
+          git config user.email "meridian-calendar[bot]@users.noreply.github.com"
+          git add bridge/calendars/calendar-snapshot.json
+          git commit -m "Refresh exchange calendar snapshot"
+          git push

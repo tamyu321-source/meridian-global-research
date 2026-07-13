@@ -36,6 +36,7 @@ export const signals = sqliteTable("signals", {
   modelVersion: text("model_version").notNull(), riskPlan: text("risk_plan").notNull(), status: text("status").notNull(), action: text("action").notNull(),
   score: real("score").notNull(), confidence: real("confidence").notNull(), tradePlanJson: text("trade_plan_json").notNull(),
   reasonsJson: text("reasons_json").notNull(), hardGatesJson: text("hard_gates_json").notNull(), sourceCapturedAt: text("source_captured_at").notNull(),
+  analysisPrice: real("analysis_price"),
   assetModel: text("asset_model").notNull().default("LEGACY_V1"), validationStatus: text("validation_status").notNull().default("SHADOW"),
   configHash: text("config_hash").notNull().default(""), dataQualityJson: text("data_quality_json").notNull().default("{}"), selectionJson: text("selection_json").notNull().default("{}"),
   createdAt: timestamp("created_at"), updatedAt: timestamp("updated_at"),
@@ -51,8 +52,35 @@ export const scanRuns = sqliteTable("scan_runs", {
   configHash: text("config_hash").notNull().default(""), validationStatus: text("validation_status").notNull().default("SHADOW"),
   sourceConflicts: integer("source_conflicts").notNull().default(0), corporateActionAnomalies: integer("corporate_action_anomalies").notNull().default(0),
   qualityGatePassed: integer("quality_gate_passed", { mode:"boolean" }).notNull().default(false), universeSnapshotDate: text("universe_snapshot_date"),
+  jobId: text("job_id"), componentId: text("component_id"), requestedAssetTypes: text("requested_asset_types").notNull().default('["STOCK","ETF"]'),
   createdAt: timestamp("created_at"), updatedAt: timestamp("updated_at"),
 }, (table) => [index("scan_runs_status_idx").on(table.status, table.completedAt)]);
+
+export const analysisJobs = sqliteTable("analysis_jobs", {
+  id: text("id").primaryKey(), userEmail: text("user_email").notNull(), trigger: text("trigger").notNull(),
+  marketScope: text("market_scope").notNull(), assetScope: text("asset_scope").notNull(), status: text("status").notNull(),
+  githubRunId: text("github_run_id"), githubRunUrl: text("github_run_url"), errorCode: text("error_code"), errorDetail: text("error_detail"),
+  completedAt: text("completed_at"), createdAt: timestamp("created_at"), updatedAt: timestamp("updated_at"),
+}, (table) => [index("analysis_jobs_user_idx").on(table.userEmail, table.createdAt), index("analysis_jobs_status_idx").on(table.status, table.updatedAt)]);
+
+export const analysisComponents = sqliteTable("analysis_components", {
+  id: text("id").primaryKey(), activeKey: text("active_key"), modelVersion: text("model_version").notNull(),
+  market: text("market").notNull(), assetType: text("asset_type").notNull(), status: text("status").notNull(), phase: text("phase").notNull().default("QUEUED"),
+  totalCount: integer("total_count").notNull().default(0), processedCount: integer("processed_count").notNull().default(0),
+  updatedCount: integer("updated_count").notNull().default(0), failedCount: integer("failed_count").notNull().default(0),
+  scanId: text("scan_id"), githubRunId: text("github_run_id"), githubRunUrl: text("github_run_url"), heartbeatAt: text("heartbeat_at"),
+  startedAt: text("started_at"), completedAt: text("completed_at"), errorCode: text("error_code"), errorDetail: text("error_detail"),
+  createdAt: timestamp("created_at"), updatedAt: timestamp("updated_at"),
+}, (table) => [uniqueIndex("analysis_components_active_idx").on(table.activeKey), index("analysis_components_scope_idx").on(table.modelVersion, table.market, table.assetType, table.createdAt)]);
+
+export const analysisJobComponents = sqliteTable("analysis_job_components", {
+  jobId: text("job_id").notNull(), componentId: text("component_id").notNull(), createdAt: timestamp("created_at"),
+}, (table) => [uniqueIndex("analysis_job_components_unique_idx").on(table.jobId, table.componentId), index("analysis_job_components_component_idx").on(table.componentId)]);
+
+export const activeScanOutputs = sqliteTable("active_scan_outputs", {
+  id: text("id").primaryKey(), modelVersion: text("model_version").notNull(), market: text("market").notNull(), assetType: text("asset_type").notNull(),
+  scanId: text("scan_id").notNull(), analysisCapturedAt: text("analysis_captured_at").notNull(), activatedAt: timestamp("activated_at"),
+}, (table) => [uniqueIndex("active_scan_outputs_bucket_idx").on(table.modelVersion, table.market, table.assetType), index("active_scan_outputs_scan_idx").on(table.scanId)]);
 
 export const watchlist = sqliteTable("watchlist", {
   userEmail: text("user_email").notNull(), instrumentId: text("instrument_id").notNull().references(() => securities.instrumentId), createdAt: timestamp("created_at"),
@@ -114,7 +142,7 @@ export const shadowValidationDays = sqliteTable("shadow_validation_days", {
 
 export const dataArtifacts = sqliteTable("data_artifacts", {
   objectKey: text("object_key").primaryKey(), modelVersion: text("model_version").notNull(), kind: text("kind").notNull(),
-  contentType: text("content_type").notNull(), bytes: integer("bytes").notNull(), sha256: text("sha256").notNull(), createdAt: timestamp("created_at"),
+  market: text("market"), assetType: text("asset_type"), scanId: text("scan_id"), contentType: text("content_type").notNull(), bytes: integer("bytes").notNull(), sha256: text("sha256").notNull(), createdAt: timestamp("created_at"),
 });
 
 export const auditLogs = sqliteTable("audit_logs", {

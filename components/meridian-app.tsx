@@ -11,6 +11,8 @@ type ScanMeta = { id:string; status:string; completedAt:string|null; discoveredC
 type RankingPayload = { rankings: RankedSecurity[]; meta: { mode: string; primaryFeed: string; discovery?:string; ibkrConnected: boolean; generatedAt: string; errors?: string[]; scan?:ScanMeta|null } };
 type ApiErrorPayload = { error?:string; errorCode?:string; errorParams?:Record<string,string|number> };
 type QuoteRefreshPayload = { scanId:string; total:number; processed:number; updated:number; failed:number; nextCursor:string|null; done:boolean; capturedAt:string };
+type AnalysisComponentPayload = { id:string; market:string; assetType:string; status:string; phase:string; total:number; processed:number; updated:number; failed:number; heartbeatAt:string|null; errorCode:string|null; errorDetail:string|null };
+type AnalysisJobPayload = { jobId:string; status:string; marketScope:string; assetScope:string; createdAt:string; completedAt:string|null; githubRunUrl:string|null; errorCode:string|null; errorDetail:string|null; components:AnalysisComponentPayload[] };
 
 const words = {
   "zh-TW": { nav:["總覽","市場掃描","訊號中心","模擬組合","回測驗證","資料健康","設定"], shadow:"影子 BUY", public:"公開來源／延遲／暫定回測", title:"跨市場投資研究", subtitle:"v2 以真實五年量價、股票／ETF 分離模型與嚴格門檻排名；允許沒有 BUY。", scan:"重新掃描", loading:"正在向市場來源取得資料…", noData:"目前沒有可驗證資料。請稍後重試或檢查資料健康度。", market:"市場", asset:"資產", risk:"風險計畫", all:"全部", stocks:"普通股", etfs:"ETF", score:"分數", signal:"訊號", price:"價格", freshness:"資料", factors:"模型因子拆解", plan:"完整交易計畫", entry:"進場區", stop:"停損", targets:"分批目標", maxWeight:"最大倉位", reason:"判斷依據", blocked:"降為觀察", paperBuy:"模擬買進", qty:"數量", setup:"請先在設定頁輸入模擬資金。", health:"七市場資料健康", ibkr:"只使用公開資料", backtest:"暫定回測與驗證門檻", portfolio:"模擬投資組合", settings:"研究設定", save:"儲存設定", notify:"測試通知", quality:"資料完整度", sources:"來源數", bucket:"桶內排名", provisional:"公開資料回測含幸存者偏差，永遠不能解鎖 FORMAL。", disclaimer:"本系統為研究與模擬決策工具，不保證獲利；公開資料只產生影子 BUY，暫定回測不能升級正式訊號。" },
@@ -35,6 +37,10 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState({ processed:0, total:0, updated:0, failed:0 });
   const [scanMessage, setScanMessage] = useState("");
+  const [analysisConfirm, setAnalysisConfirm] = useState(false);
+  const [analysisStarting, setAnalysisStarting] = useState(false);
+  const [analysisJob, setAnalysisJob] = useState<AnalysisJobPayload | null>(null);
+  const [analysisMessage, setAnalysisMessage] = useState("");
   const [error, setError] = useState("");
   const [quantity, setQuantity] = useState(1);
   const t = words[locale];
@@ -76,9 +82,49 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
     finally { setScanning(false); }
   }, [market, assetType, loadRankings, x]);
 
+  const loadAnalysisJob = useCallback(async (jobId?: string) => {
+    const endpoint = jobId ? `/api/scans/full/${encodeURIComponent(jobId)}` : `/api/scans/full?market=${market}&assetType=${assetType}`;
+    const response = await fetch(endpoint, { cache:"no-store" });
+    const result = await response.json() as { job?:AnalysisJobPayload|null } & ApiErrorPayload;
+    if (!response.ok) throw new Error(result.error ?? x("errorGeneric"));
+    setAnalysisJob(result.job ?? null);
+    return result.job ?? null;
+  }, [market, assetType, x]);
+
+  async function startFullAnalysis() {
+    setAnalysisStarting(true); setAnalysisMessage(""); setError("");
+    try {
+      const response = await fetch("/api/scans/full", { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ market, assetType }) });
+      const result = await response.json() as { job?:AnalysisJobPayload|null; reused?:boolean } & ApiErrorPayload;
+      if (!response.ok) {
+        if (result.errorCode?.startsWith("GITHUB_")) throw new Error(x("analysisCloudMissing"));
+        throw new Error(result.error ?? x("errorGeneric"));
+      }
+      setAnalysisJob(result.job ?? null); setAnalysisMessage(x("analysisStarted")); setAnalysisConfirm(false);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : x("errorGeneric")); }
+    finally { setAnalysisStarting(false); }
+  }
+
   // The current filters drive a server refresh rather than derived local state.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (["dashboard", "scanner", "signals"].includes(view)) void loadRankings(); }, [view, loadRankings]);
+  useEffect(() => {
+    if (!["dashboard", "scanner", "signals"].includes(view)) return;
+    // The active server job is the durable source of truth after refresh or sign-in.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadAnalysisJob().catch(() => undefined);
+  }, [view, loadAnalysisJob]);
+  useEffect(() => {
+    if (!analysisJob || !["QUEUED", "DISPATCHED", "RUNNING"].includes(analysisJob.status)) return;
+    const timer = window.setInterval(() => {
+      void loadAnalysisJob(analysisJob.jobId).then((next) => {
+        if (!next || ["QUEUED", "DISPATCHED", "RUNNING"].includes(next.status)) return;
+        setAnalysisMessage(next.status === "COMPLETE" ? x("analysisComplete") : next.status === "PARTIAL" ? x("analysisPartial") : x("analysisFailed"));
+        void loadRankings();
+      }).catch(() => undefined);
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [analysisJob, loadAnalysisJob, loadRankings, x]);
   useEffect(() => {
     if (view !== "security" || !instrumentId) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -114,8 +160,10 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
       </aside>
       <main className="workspace">
         {(["dashboard", "scanner", "signals", "security"] as AppView[]).includes(view) && <>
-          <section className="workspace-title"><div><p>MERIDIAN / {x(view === "dashboard" ? "dashboard" : view === "scanner" ? "scanner" : view === "signals" ? "signals" : "security")}</p><h1>{view === "security" ? selectedRank?.name ?? t.title : t.title}</h1><span>{t.subtitle}</span></div><button className="scan-button" onClick={() => void refreshMarketQuotes()} disabled={loading || scanning}>{scanning ? "…" : "↻"} {scanning ? x("refreshingQuotes", { processed:scanProgress.processed, total:scanProgress.total || "—" }) : x("refreshQuotes")}</button></section>
+          <section className="workspace-title"><div><p>MERIDIAN / {x(view === "dashboard" ? "dashboard" : view === "scanner" ? "scanner" : view === "signals" ? "signals" : "security")}</p><h1>{view === "security" ? selectedRank?.name ?? t.title : t.title}</h1><span>{t.subtitle}</span></div>{view !== "security" && <div className="analysis-actions"><button className="scan-button secondary" onClick={() => void refreshMarketQuotes()} disabled={loading || scanning}>{scanning ? "…" : "↻"} {scanning ? x("refreshingQuotes", { processed:scanProgress.processed, total:scanProgress.total || "—" }) : x("refreshQuotes")}</button><button className="scan-button" onClick={() => setAnalysisConfirm(true)} disabled={analysisStarting}>◈ {x("fullAnalysis")}</button></div>}</section>
           {(scanMessage || scanning) && <div className="scan-refresh-status" role="status">{scanning ? x("refreshingQuotes", { processed:scanProgress.processed, total:scanProgress.total || "—" }) : scanMessage}{scanning && scanProgress.failed > 0 ? ` · ${x("failed")}: ${scanProgress.failed}` : ""}</div>}
+          {view !== "security" && analysisJob && <AnalysisProgress job={analysisJob} locale={locale}/>}
+          {view !== "security" && analysisMessage && <div className="scan-refresh-status" role="status">{analysisMessage}</div>}
           {view !== "security" && <section className="control-deck">
             <Control label={t.market}><button className={market === "ALL" ? "active" : ""} onClick={() => setMarket("ALL")}>{t.all}</button>{MARKETS.map((item) => <button key={item} className={market === item ? "active" : ""} onClick={() => setMarket(item)}>{item}</button>)}</Control>
             <Control label={t.asset}><button className={assetType === "ALL" ? "active" : ""} onClick={() => setAssetType("ALL")}>{t.all}</button><button className={assetType === "STOCK" ? "active" : ""} onClick={() => setAssetType("STOCK")}>{t.stocks}</button><button className={assetType === "ETF" ? "active" : ""} onClick={() => setAssetType("ETF")}>{t.etfs}</button></Control>
@@ -147,6 +195,7 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
         {view === "health" && <HealthView locale={locale} title={t.health} ibkr={t.ibkr}/>} 
         {view === "settings" && <SettingsView locale={locale} title={t.settings} saveLabel={t.save} notifyLabel={t.notify}/>} 
       </main>
+      {analysisConfirm && <AnalysisConfirmModal locale={locale} market={market} assetType={assetType} starting={analysisStarting} onCancel={() => setAnalysisConfirm(false)} onStart={() => void startFullAnalysis()}/>}
       <footer className="app-footer"><span>© 2026 MERIDIAN RESEARCH</span><p>{t.disclaimer}</p><Link href="/health">{x("dataStatus")} →</Link></footer>
     </div>
   );
@@ -155,15 +204,41 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
 function Control({ label, children }: { label: string; children: React.ReactNode }) { return <div className="control-group"><span>{label}</span><div>{children}</div></div>; }
 function Metric({ label, value, tone }: { label: string; value: string | number; tone?: string }) { return <div className={`metric-card ${tone ?? ""}`}><span>{label}</span><strong>{value}</strong><i/></div>; }
 
+function phaseLabel(locale:Locale, phase:string) {
+  const keys:Record<string,Parameters<typeof tx>[1]> = { QUEUED:"phaseQueued", DISCOVERY:"phaseDiscovery", HISTORY:"phaseHistory", ENRICHMENT:"phaseEnrichment", SCORING:"phaseScoring", UPLOADING:"phaseUploading", COMPLETE:"phaseComplete" };
+  return tx(locale,keys[phase] ?? "phaseQueued");
+}
+
+function AnalysisProgress({ job, locale }: { job:AnalysisJobPayload; locale:Locale }) {
+  const complete = job.components.filter((item) => ["COMPLETE", "SKIPPED"].includes(item.status)).length;
+  const terminal = ["COMPLETE", "PARTIAL", "FAILED"].includes(job.status);
+  const statusText = job.status === "COMPLETE" ? tx(locale,"analysisComplete") : job.status === "PARTIAL" ? tx(locale,"analysisPartial") : job.status === "FAILED" ? tx(locale,"analysisFailed") : tx(locale,"analysisActive");
+  return <section className={`analysis-progress ${terminal ? `analysis-${job.status.toLowerCase()}` : ""}`} aria-live="polite">
+    <div className="analysis-progress-head"><div><span>{statusText}</span><strong>{tx(locale,"analysisProgress",{completed:complete,total:job.components.length})}</strong></div>{job.githubRunUrl&&<a href={job.githubRunUrl} target="_blank" rel="noreferrer">GitHub Actions ↗</a>}</div>
+    <div className="analysis-components">{job.components.map((item) => {
+      const percent = item.total > 0 ? Math.min(100,Math.round(item.processed / item.total * 100)) : item.status === "COMPLETE" ? 100 : 0;
+      return <div key={item.id} className={`analysis-component component-${item.status.toLowerCase()}`}><div><strong>{item.market} · {codeText(locale,item.assetType)}</strong><span>{phaseLabel(locale,item.phase)} · {percent}%</span></div><i><b style={{width:`${percent}%`}}/></i>{item.errorCode&&<small>{item.errorDetail || item.errorCode}</small>}</div>;
+    })}</div>
+  </section>;
+}
+
+function AnalysisConfirmModal({ locale, market, assetType, starting, onCancel, onStart }: { locale:Locale; market:string; assetType:string; starting:boolean; onCancel:()=>void; onStart:()=>void }) {
+  const marketCount = market === "ALL" ? MARKETS.length : 1;
+  const estimate = marketCount * (assetType === "STOCK" ? 500 : assetType === "ETF" ? 100 : 600);
+  const scope = `${market === "ALL" ? MARKETS.join(" · ") : market} / ${assetType === "ALL" ? `${tx(locale,"stock")} + ETF` : codeText(locale,assetType)}`;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event)=>{if(event.currentTarget===event.target&&!starting)onCancel();}}><section className="analysis-modal" role="dialog" aria-modal="true" aria-labelledby="full-analysis-title"><p>MERIDIAN / {tx(locale,"shadow")}</p><h2 id="full-analysis-title">{tx(locale,"fullAnalysisConfirmTitle")}</h2><div className="modal-warning">{tx(locale,"fullAnalysisConfirmBody")}</div><dl><div><dt>{tx(locale,"analysisScope")}</dt><dd>{scope}</dd></div><div><dt>{tx(locale,"analysisEstimate")}</dt><dd>≈ {estimate.toLocaleString(locale)}</dd></div><div><dt>{tx(locale,"analysisFirstBackfill")}</dt><dd>{tx(locale,"analysisFirstBackfillValue")}</dd></div></dl><div className="modal-actions"><button className="secondary" disabled={starting} onClick={onCancel}>{tx(locale,"cancel")}</button><button disabled={starting} onClick={onStart}>{starting ? tx(locale,"analysisQueued") : tx(locale,"startAnalysis")}</button></div></section></div>;
+}
+
 function SecurityPanel({ security, locale, t, quantity, setQuantity, onPaperBuy, standalone=false }: { security: RankedSecurity; locale: Locale; t: typeof words[Locale]; quantity:number; setQuantity:(value:number)=>void; onPaperBuy:()=>void; standalone?:boolean }) {
   return <aside className={`security-panel ${standalone ? "standalone" : ""}`}>
     <div className="security-head"><div><span>{security.market} · {codeText(locale,security.assetType)} · {security.exchange}</span><h2>{security.name}</h2><p>{security.symbol} / {security.currency}</p></div><div className="score-orbit"><strong>{security.score}</strong><small>{codeText(locale,security.status)}</small></div></div>
-    <div className="source-banner"><span className={`freshness freshness-${security.freshness}`}>{codeText(locale,security.freshness)}</span><div><strong>{security.source}</strong><small>{new Date(security.capturedAt).toLocaleString(locale)}</small></div></div>
+    <div className="source-banner"><span className={`freshness freshness-${security.freshness}`}>{codeText(locale,security.freshness)}</span><div><strong>{security.source}</strong><small>{tx(locale,"quoteTime")}: {new Date(security.capturedAt).toLocaleString(locale)} · {security.currency} {security.price.toLocaleString(locale)}</small><small>{tx(locale,"analysisTime")}: {security.analysisCapturedAt ? new Date(security.analysisCapturedAt).toLocaleString(locale) : "—"} · {tx(locale,"analysisPrice")}: {security.analysisPrice ? `${security.currency} ${security.analysisPrice.toLocaleString(locale)}` : "—"}</small></div></div>
     <div className="risk-limit-grid"><div><span>{t.quality}</span><strong>{security.dataQuality?.completenessPct ?? 0}%</strong></div><div><span>{t.sources}</span><strong>{security.dataQuality?.sourceCount ?? 0}</strong></div><div><span>{t.bucket}</span><strong>{security.selection?.bucketRank ?? 0} / {security.selection?.buyLimit ?? 0} BUY</strong></div><div><span>Model</span><strong>{security.assetModel}</strong></div></div>
     <div className="factor-deck"><h3>{t.factors}</h3>{factorKeys.map((key,index)=><div key={key}><span>{factorName[locale][index]}</span><i><b style={{width:`${security.factors[key]}%`}}/></i><strong>{security.factors[key]}</strong></div>)}</div>
     <div className="trade-plan"><h3>{t.plan}</h3><dl><div><dt>{t.entry}</dt><dd>{security.tradePlan.entryLow}–{security.tradePlan.entryHigh}</dd></div><div><dt>{t.stop}</dt><dd>{security.tradePlan.stop}</dd></div><div><dt>{t.targets}</dt><dd>{security.tradePlan.target1} / {security.tradePlan.target2}</dd></div><div><dt>{t.maxWeight}</dt><dd>{security.tradePlan.maxWeightPct}%</dd></div></dl></div>
     <div className="evidence"><h3>{t.reason}</h3><div>{security.reasonCodes.map((code)=><span key={code}>{codeText(locale,code)}</span>)}</div>{security.hardGates.length>0&&<p><b>!</b>{t.blocked}: {security.hardGates.map((code)=>codeText(locale,code)).join(" · ")}</p>}</div>
-    <div className="paper-action"><label>{t.qty}<input type="number" min="1" step="1" value={quantity} onChange={(event)=>setQuantity(Math.max(1,Number(event.target.value)))}/></label><button onClick={onPaperBuy}>{t.paperBuy}</button></div>
+    {security.tradePlanState === "REANALYSIS_REQUIRED"&&<div className="reanalysis-warning"><strong>{tx(locale,"reanalysisRequired")}</strong><span>{tx(locale,"reanalysisBuyBlocked")}</span></div>}
+    <div className="paper-action"><label>{t.qty}<input type="number" min="1" step="1" value={quantity} onChange={(event)=>setQuantity(Math.max(1,Number(event.target.value)))}/></label><button onClick={onPaperBuy} disabled={security.tradePlanState === "REANALYSIS_REQUIRED"}>{t.paperBuy}</button></div>
   </aside>;
 }
 
@@ -201,8 +276,10 @@ function BacktestView({ locale, title }: { locale:Locale; title:string }) {
 function tFor(locale:Locale){ return words[locale]; }
 
 function HealthView({ locale, title, ibkr }: { locale:Locale; title:string; ibkr:string }) {
-  const [data,setData]=useState<{markets?:Array<Record<string,unknown>>;storage?:Record<string,unknown>}|null>(null); useEffect(()=>{fetch("/api/data-health",{cache:"no-store"}).then(async r=>await r.json() as {markets?:Array<Record<string,unknown>>;storage?:Record<string,unknown>}).then(setData);},[]);
-  return <PageSection title={title} eyebrow={tx(locale,"healthEyebrow")}><div className="activation-banner warning"><span>{tx(locale,"primaryFeed")}</span><strong>{ibkr}</strong><p>{tx(locale,"shadowUntilValidated")}</p></div><div className="market-health-grid">{data?.markets?.map(row=><div key={String(row.market)} className={`health-${row.status}`}><span>{String(row.market)}</span><strong>{codeText(locale,row.status)}</strong><small>{codeText(locale,row.source)}<br/>{row.lastCapturedAt?new Date(String(row.lastCapturedAt)).toLocaleString(locale):tx(locale,"noSnapshot")}</small></div>)}</div></PageSection>;
+  type HealthPayload={markets?:Array<Record<string,unknown>>;storage?:Record<string,unknown>;cloudAnalyzer?:{configured?:boolean;state?:string;repository?:string|null;url?:string|null};analysisJobs?:Array<Record<string,unknown>>};
+  const [data,setData]=useState<HealthPayload|null>(null); useEffect(()=>{fetch("/api/data-health",{cache:"no-store"}).then(async r=>await r.json() as HealthPayload).then(setData);},[]);
+  const cloud=data?.cloudAnalyzer;
+  return <PageSection title={title} eyebrow={tx(locale,"healthEyebrow")}><div className="activation-banner warning"><span>{tx(locale,"primaryFeed")}</span><strong>{ibkr}</strong><p>{tx(locale,"shadowUntilValidated")}</p></div><div className={`activation-banner ${cloud?.configured&&cloud.state==="active"?"":"warning"}`}><span>{tx(locale,"fullAnalysis")}</span><strong>{cloud?.configured ? String(cloud.state??tx(locale,"unknown")) : tx(locale,"off")}</strong><p>{cloud?.configured ? `${cloud.repository??"GitHub"} · ${tx(locale,"analysisJobCount",{count:data?.analysisJobs?.length??0})}` : tx(locale,"analysisCloudMissing")}</p></div><div className="market-health-grid">{data?.markets?.map(row=><div key={String(row.market)} className={`health-${row.status}`}><span>{String(row.market)}</span><strong>{codeText(locale,row.status)}</strong><small>{codeText(locale,row.source)}<br/>{row.lastCapturedAt?new Date(String(row.lastCapturedAt)).toLocaleString(locale):tx(locale,"noSnapshot")}</small></div>)}</div></PageSection>;
 }
 
 function SettingsView({ locale, title, saveLabel, notifyLabel }: { locale:Locale; title:string; saveLabel:string; notifyLabel:string }) {

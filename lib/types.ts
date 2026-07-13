@@ -88,6 +88,10 @@ export type RankedSecurity = {
   freshness: DataFreshness;
   source: string;
   capturedAt: string;
+  analysisCapturedAt?: string;
+  analysisPrice?: number;
+  analysisScanId?: string;
+  tradePlanState?: "CURRENT" | "REANALYSIS_REQUIRED";
   factors: FactorScores;
   tradePlan: TradePlan;
   reasonCodes: string[];
