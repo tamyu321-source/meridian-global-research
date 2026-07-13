@@ -1,6 +1,10 @@
-# vinext-starter
+# Meridian Global Research
 
-A clean full-stack starter running on
+The owner-only Sites application for seven-market shadow signals, paper trading,
+data health, and provisional walk-forward backtests. Paper orders refresh public
+quotes older than 15 minutes before server-side execution and risk validation.
+
+The application runs on
 [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
 Drizzle support.
 
