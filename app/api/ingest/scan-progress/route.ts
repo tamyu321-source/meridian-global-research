@@ -1,4 +1,4 @@
-import { ANALYSIS_PHASES, isTerminalComponent, phaseIndex, reconcileAnalysisJob } from "@/lib/analysis-jobs";
+import { ANALYSIS_PHASES, isTerminalComponent, mergeProgressCounts, phaseIndex, reconcileAnalysisJob } from "@/lib/analysis-jobs";
 import { jsonError, runtimeEnv, verifyHmac } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
@@ -21,12 +21,15 @@ export async function POST(request: Request) {
   if (!component) return jsonError("Analysis component not found", 404);
   const currentPhase = phaseIndex(String(component.phase));
   const nextPhase = phaseIndex(String(body.phase));
-  if (nextPhase < currentPhase || Number(body.total ?? 0) < Number(component.total_count ?? 0) || Number(body.processed ?? 0) < Number(component.processed_count ?? 0) || Number(body.updated ?? 0) < Number(component.updated_count ?? 0) || Number(body.failed ?? 0) < Number(component.failed_count ?? 0)) return jsonError("Progress must be monotonic", 409);
+  const currentCounts = { total:Number(component.total_count ?? 0),processed:Number(component.processed_count ?? 0),updated:Number(component.updated_count ?? 0),failed:Number(component.failed_count ?? 0) };
+  const requestedCounts = { total:Number(body.total ?? 0),processed:Number(body.processed ?? 0),updated:Number(body.updated ?? 0),failed:Number(body.failed ?? 0) };
+  const counts = mergeProgressCounts(currentCounts,requestedCounts,String(body.status));
+  if (nextPhase < currentPhase || (String(body.status) !== "FAILED" && (counts.total < currentCounts.total || counts.processed < currentCounts.processed || counts.updated < currentCounts.updated || counts.failed < currentCounts.failed))) return jsonError("Progress must be monotonic", 409);
   if (isTerminalComponent(String(component.status)) && String(body.status) !== String(component.status)) return jsonError("Terminal component cannot be changed", 409);
   const terminal = isTerminalComponent(String(body.status));
   await db.batch([
     db.prepare(`UPDATE analysis_components SET status=?,phase=?,total_count=?,processed_count=?,updated_count=?,failed_count=?,scan_id=COALESCE(?,scan_id),github_run_id=COALESCE(?,github_run_id),github_run_url=COALESCE(?,github_run_url),heartbeat_at=CURRENT_TIMESTAMP,started_at=COALESCE(started_at,CURRENT_TIMESTAMP),completed_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE completed_at END,active_key=CASE WHEN ? THEN NULL ELSE active_key END,error_code=?,error_detail=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-      .bind(body.status, body.phase, Number(body.total ?? 0), Number(body.processed ?? 0), Number(body.updated ?? 0), Number(body.failed ?? 0), body.scanId ?? null, body.githubRunId ?? null, body.githubRunUrl ?? null, terminal ? 1 : 0, terminal ? 1 : 0, body.errorCode ?? null, body.errorDetail?.slice(0, 800) ?? null, body.componentId),
+      .bind(body.status, body.phase, counts.total, counts.processed, counts.updated, counts.failed, body.scanId ?? null, body.githubRunId ?? null, body.githubRunUrl ?? null, terminal ? 1 : 0, terminal ? 1 : 0, body.errorCode ?? null, body.errorDetail?.slice(0, 800) ?? null, body.componentId),
     db.prepare("UPDATE analysis_jobs SET github_run_id=COALESCE(?,github_run_id),github_run_url=COALESCE(?,github_run_url),updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(body.githubRunId ?? null, body.githubRunUrl ?? null, body.jobId),
     db.prepare("INSERT INTO ingest_events (idempotency_key,provider,captured_at,object_key,record_count,status,created_at) VALUES (?,'github-progress',?,?,1,'accepted',CURRENT_TIMESTAMP)").bind(idempotencyKey, new Date().toISOString(), body.componentId),
   ]);

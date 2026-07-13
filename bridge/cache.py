@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 try:
     import duckdb
 except ImportError as exc:  # explicit diagnostic instead of silently losing persistence
-    raise RuntimeError("Install the Windows bridge dependency: pip install 'duckdb>=1.3,<2'") from exc
+    raise RuntimeError("Install the bridge dependency: pip install 'duckdb>=1.5,<2'") from exc
 
 
 class MarketCache:

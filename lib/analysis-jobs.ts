@@ -10,6 +10,18 @@ const SUCCESS = new Set<AnalysisStatus>(["COMPLETE", "SKIPPED"]);
 
 export type AnalysisComponentRow = Record<string, unknown> & { id: string; market: MarketCode; asset_type: AssetType; status: AnalysisStatus; phase: AnalysisPhase };
 
+export type ProgressCounts = { total:number; processed:number; updated:number; failed:number };
+
+export function mergeProgressCounts(current: ProgressCounts, requested: ProgressCounts, status: string): ProgressCounts {
+  if (status !== "FAILED") return requested;
+  return {
+    total:Math.max(current.total,requested.total),
+    processed:Math.max(current.processed,requested.processed),
+    updated:Math.max(current.updated,requested.updated),
+    failed:Math.max(current.failed,requested.failed),
+  };
+}
+
 export function expandAnalysisScope(market: string, assetType: string) {
   const normalizedMarket = market.toUpperCase();
   const normalizedAsset = assetType.toUpperCase();

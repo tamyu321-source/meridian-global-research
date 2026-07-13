@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import urllib.error
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -66,9 +67,26 @@ def prepare(args):
     _output("job_id", job_ids[0] if job_ids else ""); _output("components_json", components); _output("skip", "false" if components else "true")
 
 
+def _report_failure(args, job_id, component_id):
+    payload = {"jobId":job_id,"componentId":component_id,"status":"FAILED","phase":"UPLOADING","total":args.total,"processed":args.processed,"updated":args.updated,"failed":max(1,args.failed),"githubRunId":os.getenv("GITHUB_RUN_ID"),"errorCode":"GITHUB_JOB_FAILED","errorDetail":"The GitHub analysis job stopped before producing an activatable result."}
+    try:
+        signed_json(args.endpoint.rstrip("/") + "/api/ingest/scan-progress", args.secret, payload, f"workflow-failure-{component_id}-{os.getenv('GITHUB_RUN_ATTEMPT','1')}", args.token)
+        return True
+    except urllib.error.HTTPError as exc:
+        # A successful or already-failed terminal component must not make the
+        # workflow finalizer fail while releasing other matrix work.
+        if exc.code == 409: return False
+        raise
+
+
 def fail(args):
-    payload = {"jobId":args.job_id,"componentId":args.component_id,"status":"FAILED","phase":"UPLOADING","total":args.total,"processed":args.processed,"updated":args.updated,"failed":max(1,args.failed),"githubRunId":os.getenv("GITHUB_RUN_ID"),"errorCode":"GITHUB_JOB_FAILED","errorDetail":"The GitHub analysis job stopped before producing an activatable result."}
-    signed_json(args.endpoint.rstrip("/") + "/api/ingest/scan-progress", args.secret, payload, f"workflow-failure-{args.component_id}-{os.getenv('GITHUB_RUN_ATTEMPT','1')}", args.token)
+    _report_failure(args, args.job_id, args.component_id)
+
+
+def fail_components(args):
+    components = json.loads(args.manual_components_json or "[]")
+    reported = sum(bool(_report_failure(args, item.get("jobId") or args.manual_job_id, item["id"])) for item in components if item.get("id"))
+    print(json.dumps({"failedComponentsReported":reported,"componentCount":len(components)}, separators=(",", ":")), flush=True)
 
 
 def main():
@@ -76,7 +94,11 @@ def main():
     common = argparse.ArgumentParser(add_help=False); common.add_argument("--endpoint", required=True); common.add_argument("--secret", required=True); common.add_argument("--token", default="")
     prepare_parser = sub.add_parser("prepare", parents=[common]); prepare_parser.add_argument("--cron", default=""); prepare_parser.add_argument("--manual-job-id", default=""); prepare_parser.add_argument("--manual-components-json", default="[]")
     fail_parser = sub.add_parser("fail", parents=[common]); fail_parser.add_argument("--job-id", required=True); fail_parser.add_argument("--component-id", required=True); fail_parser.add_argument("--total", type=int, default=0); fail_parser.add_argument("--processed", type=int, default=0); fail_parser.add_argument("--updated", type=int, default=0); fail_parser.add_argument("--failed", type=int, default=1)
-    args = parser.parse_args(); prepare(args) if args.command == "prepare" else fail(args)
+    fail_many = sub.add_parser("fail-components", parents=[common]); fail_many.add_argument("--manual-job-id", required=True); fail_many.add_argument("--manual-components-json", default="[]"); fail_many.add_argument("--total", type=int, default=0); fail_many.add_argument("--processed", type=int, default=0); fail_many.add_argument("--updated", type=int, default=0); fail_many.add_argument("--failed", type=int, default=1)
+    args = parser.parse_args()
+    if args.command == "prepare": prepare(args)
+    elif args.command == "fail": fail(args)
+    else: fail_components(args)
 
 
 if __name__ == "__main__": main()

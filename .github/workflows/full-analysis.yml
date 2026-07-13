@@ -96,7 +96,7 @@ jobs:
           INGEST_HMAC_SECRET: ${{ secrets.INGEST_HMAC_SECRET }}
           OAI_SITES_BYPASS_TOKEN: ${{ secrets.OAI_SITES_BYPASS_TOKEN }}
         run: >-
-          python -m bridge.meridian_bridge
+          python -X faulthandler -m bridge.meridian_bridge
           --endpoint "$MERIDIAN_ENDPOINT"
           --secret "$INGEST_HMAC_SECRET"
           --sites-token "$OAI_SITES_BYPASS_TOKEN"
@@ -118,3 +118,28 @@ jobs:
           --token "$OAI_SITES_BYPASS_TOKEN"
           --job-id "${{ matrix.component.jobId }}"
           --component-id "${{ matrix.component.id }}"
+
+  finalize-failures:
+    needs: [prepare, analyze]
+    if: ${{ always() && (needs.prepare.result == 'failure' || needs.prepare.result == 'cancelled' || needs.analyze.result == 'failure' || needs.analyze.result == 'cancelled') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Release failed component locks
+        env:
+          MERIDIAN_ENDPOINT: ${{ secrets.MERIDIAN_ENDPOINT }}
+          INGEST_HMAC_SECRET: ${{ secrets.INGEST_HMAC_SECRET }}
+          OAI_SITES_BYPASS_TOKEN: ${{ secrets.OAI_SITES_BYPASS_TOKEN }}
+          MANUAL_JOB_ID: ${{ needs.prepare.outputs.job_id || inputs.job_id }}
+          MANUAL_COMPONENTS_JSON: ${{ needs.prepare.outputs.components_json || inputs.components_json || '[]' }}
+        run: >-
+          python bridge/cloud_schedule.py fail-components
+          --endpoint "$MERIDIAN_ENDPOINT"
+          --secret "$INGEST_HMAC_SECRET"
+          --token "$OAI_SITES_BYPASS_TOKEN"
+          --manual-job-id "${MANUAL_JOB_ID:-workflow-$GITHUB_RUN_ID}"
+          --manual-components-json "${MANUAL_COMPONENTS_JSON:-[]}"

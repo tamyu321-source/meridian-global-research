@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue, type StatementSync } from "node:sqlite";
 import test from "node:test";
-import { createAnalysisJob, expandAnalysisScope, isTerminalComponent, phaseIndex } from "../lib/analysis-jobs";
+import { createAnalysisJob, expandAnalysisScope, isTerminalComponent, mergeProgressCounts, phaseIndex } from "../lib/analysis-jobs";
 
 class TestStatement {
   private values:SQLInputValue[]=[];
@@ -32,6 +32,12 @@ test("analysis phases are monotonic and terminal states release work", () => {
   assert.equal(isTerminalComponent("COMPLETE"),true);
   assert.equal(isTerminalComponent("STALLED"),true);
   assert.equal(isTerminalComponent("RUNNING"),false);
+});
+
+test("terminal failure preserves the last durable progress counters", () => {
+  const current={total:500,processed:120,updated:90,failed:3};
+  assert.deepEqual(mergeProgressCounts(current,{total:0,processed:0,updated:0,failed:1},"FAILED"),current);
+  assert.deepEqual(mergeProgressCounts(current,{total:500,processed:121,updated:91,failed:3},"RUNNING"),{total:500,processed:121,updated:91,failed:3});
 });
 
 test("overlapping full-analysis requests reuse one active market and asset component", async () => {
