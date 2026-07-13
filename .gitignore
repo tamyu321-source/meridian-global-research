@@ -9,4 +9,5 @@ bridge/*.json.gz
 bridge/backtest-result.json
 tsconfig.tsbuildinfo
 work/
-.env
+.env*
+!.env.example
