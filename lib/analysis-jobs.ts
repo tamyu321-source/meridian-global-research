@@ -1,4 +1,4 @@
-import { CANDIDATE_MODEL_VERSION, MARKETS, type AssetType, type MarketCode } from "./types";
+import { MARKETS, isSupportedModelVersion, type AssetType, type MarketCode } from "./types";
 import type { Locale } from "./types";
 import { tx } from "./i18n";
 
@@ -8,7 +8,7 @@ export type AnalysisStatus = "QUEUED" | "DISPATCHED" | "RUNNING" | "COMPLETE" | 
 const ACTIVE = new Set<AnalysisStatus>(["QUEUED", "DISPATCHED", "RUNNING"]);
 const SUCCESS = new Set<AnalysisStatus>(["COMPLETE", "SKIPPED"]);
 
-export type AnalysisComponentRow = Record<string, unknown> & { id: string; market: MarketCode; asset_type: AssetType; status: AnalysisStatus; phase: AnalysisPhase };
+export type AnalysisComponentRow = Record<string, unknown> & { id: string; model_version: string; market: MarketCode; asset_type: AssetType; status: AnalysisStatus; phase: AnalysisPhase };
 
 export type ProgressCounts = { total:number; processed:number; updated:number; failed:number };
 
@@ -32,7 +32,8 @@ export function expandAnalysisScope(market: string, assetType: string) {
   return { market: normalizedMarket, assetType: normalizedAsset, markets, assets, buckets: markets.flatMap((item) => assets.map((asset) => ({ market: item, assetType: asset }))) };
 }
 
-export async function createAnalysisJob(db: D1Database, ownerEmail: string, trigger: "MANUAL" | "SCHEDULED", market: string, assetType: string) {
+export async function createAnalysisJob(db: D1Database, ownerEmail: string, trigger: "MANUAL" | "SCHEDULED", market: string, assetType: string, modelVersion: string) {
+  if (!isSupportedModelVersion(modelVersion)) throw new Error("UNSUPPORTED_MODEL_VERSION");
   const scope = expandAnalysisScope(market, assetType);
   const jobId = crypto.randomUUID();
   await db.prepare(`INSERT INTO analysis_jobs (id,user_email,trigger,market_scope,asset_scope,status,created_at,updated_at)
@@ -40,13 +41,13 @@ export async function createAnalysisJob(db: D1Database, ownerEmail: string, trig
   const components: AnalysisComponentRow[] = [];
   const createdIds = new Set<string>();
   for (const bucket of scope.buckets) {
-    const activeKey = `${CANDIDATE_MODEL_VERSION}:${bucket.market}:${bucket.assetType}`;
+    const activeKey = `${modelVersion}:${bucket.market}:${bucket.assetType}`;
     let component = await db.prepare("SELECT * FROM analysis_components WHERE active_key=? LIMIT 1").bind(activeKey).first<AnalysisComponentRow>();
     if (!component) {
       const componentId = crypto.randomUUID();
       try {
         await db.prepare(`INSERT INTO analysis_components (id,active_key,model_version,market,asset_type,status,phase,heartbeat_at,created_at,updated_at)
-          VALUES (?,?,?,?,?,'QUEUED','QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(componentId, activeKey, CANDIDATE_MODEL_VERSION, bucket.market, bucket.assetType).run();
+          VALUES (?,?,?,?,?,'QUEUED','QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(componentId, activeKey, modelVersion, bucket.market, bucket.assetType).run();
         component = await db.prepare("SELECT * FROM analysis_components WHERE id=?").bind(componentId).first<AnalysisComponentRow>();
         createdIds.add(componentId);
       } catch {
@@ -57,7 +58,7 @@ export async function createAnalysisJob(db: D1Database, ownerEmail: string, trig
     await db.prepare("INSERT OR IGNORE INTO analysis_job_components (job_id,component_id,created_at) VALUES (?,?,CURRENT_TIMESTAMP)").bind(jobId, component.id).run();
     components.push(component);
   }
-  return { jobId, scope, components, createdComponents: components.filter((component) => createdIds.has(component.id)) };
+  return { jobId, scope, modelVersion, components, createdComponents: components.filter((component) => createdIds.has(component.id)) };
 }
 
 export async function attachGithubRun(db: D1Database, jobId: string, componentIds: string[], runId: string | null, runUrl: string | null) {
@@ -75,7 +76,7 @@ export async function failDispatch(db: D1Database, jobId: string, componentIds: 
 
 function componentView(row: AnalysisComponentRow) {
   return {
-    id: String(row.id), market: String(row.market), assetType: String(row.asset_type), status: String(row.status), phase: String(row.phase),
+    id: String(row.id), modelVersion: String(row.model_version), market: String(row.market), assetType: String(row.asset_type), status: String(row.status), phase: String(row.phase),
     total: Number(row.total_count ?? 0), processed: Number(row.processed_count ?? 0), updated: Number(row.updated_count ?? 0), failed: Number(row.failed_count ?? 0),
     scanId: row.scan_id ? String(row.scan_id) : null, githubRunId: row.github_run_id ? String(row.github_run_id) : null, githubRunUrl: row.github_run_url ? String(row.github_run_url) : null,
     heartbeatAt: row.heartbeat_at ? String(row.heartbeat_at) : null, startedAt: row.started_at ? String(row.started_at) : null, completedAt: row.completed_at ? String(row.completed_at) : null,
@@ -124,7 +125,7 @@ export async function reconcileAnalysisJob(db: D1Database, jobId: string) {
   }
   components = components.map((component) => component);
   return {
-    jobId, trigger: String(job.trigger), marketScope: String(job.market_scope), assetScope: String(job.asset_scope), status,
+    jobId, trigger: String(job.trigger), modelVersion: components.length ? String(components[0].model_version) : null, marketScope: String(job.market_scope), assetScope: String(job.asset_scope), status,
     githubRunId: job.github_run_id ? String(job.github_run_id) : null, githubRunUrl: job.github_run_url ? String(job.github_run_url) : null,
     createdAt: String(job.created_at), completedAt: job.completed_at ? String(job.completed_at) : null,
     errorCode: job.error_code ? String(job.error_code) : null, errorDetail: job.error_detail ? String(job.error_detail) : null,

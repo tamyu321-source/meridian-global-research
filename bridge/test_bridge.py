@@ -5,9 +5,11 @@ import unittest
 import urllib.error
 from unittest.mock import patch
 
+import bridge.meridian_bridge as bridge
 from bridge.cache import MarketCache
 from bridge.meridian_bridge import ProgressReporter, _symbol_matches
 from bridge.model_v2 import CONFIG_HASH, MODEL_VERSION, number, rank_snapshots, raw_factors
+from bridge.model_v21 import MODEL_VERSION as CANDIDATE_MODEL_VERSION
 
 
 def fixture(symbol, slope=.2, asset_type="STOCK", sector="Technology", volume_multiplier=1):
@@ -20,6 +22,17 @@ def fixture(symbol, slope=.2, asset_type="STOCK", sector="Technology", volume_mu
 
 
 class BridgeUnitTests(unittest.TestCase):
+    def test_bridge_selects_the_requested_canonical_model(self):
+        try:
+            selected=bridge._select_model(MODEL_VERSION)
+            self.assertEqual(selected.MODEL_VERSION,MODEL_VERSION)
+            self.assertEqual(bridge.MODEL_VERSION,MODEL_VERSION)
+            self.assertEqual(bridge.model_identity()["modelVersion"],MODEL_VERSION)
+            with self.assertRaisesRegex(ValueError,"Unsupported model version"):
+                bridge._select_model("meridian-swing-v9.9.9")
+        finally:
+            bridge._select_model(CANDIDATE_MODEL_VERSION)
+
     def test_progress_reporter_never_decreases_durable_counts(self):
         reporter=ProgressReporter("https://example.test","secret","token","job","component")
         with patch("bridge.meridian_bridge._signed_json", return_value={"accepted":True}) as send:

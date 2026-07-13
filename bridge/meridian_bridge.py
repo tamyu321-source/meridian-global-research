@@ -25,12 +25,42 @@ from datetime import datetime, timezone
 
 try:
     from .cache import MarketCache
-    from .model_v21 import BENCHMARK_SYMBOLS, CONFIG, CONFIG_HASH, MODEL_VERSION, build_market_context, model_identity, number, rank_snapshots, raw_factors
+    from . import model_v2, model_v21
     from .signed_request import is_retryable_request_error, signed_json as _signed_json
 except ImportError:
     from cache import MarketCache
-    from model_v21 import BENCHMARK_SYMBOLS, CONFIG, CONFIG_HASH, MODEL_VERSION, build_market_context, model_identity, number, rank_snapshots, raw_factors
+    import model_v2
+    import model_v21
     from signed_request import is_retryable_request_error, signed_json as _signed_json
+
+SUPPORTED_MODELS = {
+    model_v2.MODEL_VERSION: model_v2,
+    model_v21.MODEL_VERSION: model_v21,
+}
+MODEL_MODULE = model_v21
+BENCHMARK_SYMBOLS = model_v21.BENCHMARK_SYMBOLS
+build_market_context = model_v21.build_market_context
+
+
+def _select_model(model_version):
+    """Select one canonical production model for the lifetime of this process."""
+    global MODEL_MODULE, CONFIG, CONFIG_HASH, MODEL_VERSION, model_identity, number, rank_snapshots, raw_factors
+    try:
+        module = SUPPORTED_MODELS[model_version]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported model version: {model_version}") from exc
+    MODEL_MODULE = module
+    CONFIG = module.CONFIG
+    CONFIG_HASH = module.CONFIG_HASH
+    MODEL_VERSION = module.MODEL_VERSION
+    model_identity = module.model_identity
+    number = module.number
+    rank_snapshots = module.rank_snapshots
+    raw_factors = module.raw_factors
+    return module
+
+
+_select_model(model_v21.MODEL_VERSION)
 
 MARKETS = ("US", "CN", "HK", "TW", "JP", "KR", "SG")
 MARKET = {
@@ -368,21 +398,26 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
         reporter.report("RUNNING", "ENRICHMENT", total_target, total_target, len(all_snapshots), len(errors), scan_id)
         enrich_candidate_profiles(client, cache, all_snapshots)
         reporter.report("RUNNING", "SCORING", total_target, total_target, len(all_snapshots), len(errors), scan_id)
-        market_contexts = {}
         raw_by_id = {item["instrumentId"]:raw_factors(item) for item in all_snapshots}
-        for market in markets:
-            market_pool = [item for item in all_snapshots if item["market"] == market]
-            try:
-                benchmark = fetch_benchmark_snapshot(client, market)
-                market_contexts[market] = build_market_context(market_pool, benchmark, raw_by_id)
-            except Exception as exc:
-                market_contexts[market] = build_market_context(market_pool, None, raw_by_id)
-                errors.append({"market":market,"symbol":BENCHMARK_SYMBOLS[market],"stage":"regime","error":type(exc).__name__})
-        rankings = rank_snapshots(all_snapshots, allow_buy=True, market_contexts=market_contexts, raw_by_id=raw_by_id); completed = datetime.now(timezone.utc)
+        market_contexts = {}
+        if MODEL_MODULE is model_v21:
+            for market in markets:
+                market_pool = [item for item in all_snapshots if item["market"] == market]
+                try:
+                    benchmark = fetch_benchmark_snapshot(client, market)
+                    market_contexts[market] = build_market_context(market_pool, benchmark, raw_by_id)
+                except Exception as exc:
+                    market_contexts[market] = build_market_context(market_pool, None, raw_by_id)
+                    errors.append({"market":market,"symbol":BENCHMARK_SYMBOLS[market],"stage":"regime","error":type(exc).__name__})
+            rankings = rank_snapshots(all_snapshots, allow_buy=True, market_contexts=market_contexts, raw_by_id=raw_by_id)
+        else:
+            rankings = rank_snapshots(all_snapshots, allow_buy=True, raw_by_id=raw_by_id)
+        completed = datetime.now(timezone.utc)
         source_conflicts = sum(len(item.get("sourceConflicts") or []) for item in all_snapshots); action_anomalies = sum(len(item.get("corporateActionAnomalies") or []) for item in all_snapshots)
         complete = bool(markets) and all(coverage.get(market, {}).get("qualityGatePassed") for market in markets) and action_anomalies == 0
         status = "complete" if complete else "partial"
-        scan = {"id":scan_id,"provider":"Public exchange directories + Yahoo Finance adjusted OHLCV + benchmark breadth","modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"validationStatus":"SHADOW","status":status,"startedAt":started.isoformat(),"completedAt":completed.isoformat(),"requestedMarkets":markets,"requestedAssetTypes":list(asset_types),"jobId":job_id or None,"componentId":component_id or None,"targetStocksPerMarket":stock_target,"targetEtfsPerMarket":etf_target,"discoveredCount":sum(v["stocksDiscovered"]+v["etfsDiscovered"] for v in coverage.values()),"analyzedCount":len(rankings),"failedCount":len(errors),"fallbackCount":0,"coverage":coverage,"marketContexts":market_contexts,"sourceConflicts":source_conflicts,"corporateActionAnomalies":action_anomalies,"qualityGatePassed":complete,"universeSnapshotDate":today}
+        provider = "Public exchange directories + Yahoo Finance adjusted OHLCV" + (" + benchmark breadth" if MODEL_MODULE is model_v21 else "")
+        scan = {"id":scan_id,"provider":provider,"modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"validationStatus":"SHADOW","status":status,"startedAt":started.isoformat(),"completedAt":completed.isoformat(),"requestedMarkets":markets,"requestedAssetTypes":list(asset_types),"jobId":job_id or None,"componentId":component_id or None,"targetStocksPerMarket":stock_target,"targetEtfsPerMarket":etf_target,"discoveredCount":sum(v["stocksDiscovered"]+v["etfsDiscovered"] for v in coverage.values()),"analyzedCount":len(rankings),"failedCount":len(errors),"fallbackCount":0,"coverage":coverage,"marketContexts":market_contexts,"sourceConflicts":source_conflicts,"corporateActionAnomalies":action_anomalies,"qualityGatePassed":complete,"universeSnapshotDate":today}
         reporter.report("RUNNING", "UPLOADING", total_target, total_target, len(rankings), len(errors), scan_id)
         for (market,current_asset), path in parquet.items():
             upload_artifact(endpoint, secret, sites_token, path, f"history/{MODEL_VERSION}/{scan_id}/{market}/{current_asset}.parquet", market, current_asset, scan_id)
@@ -398,9 +433,11 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
 
 
 def main():
-    load_local_env(); parser = argparse.ArgumentParser(description="Meridian v2.1 reliability-first public market bridge")
-    parser.add_argument("--endpoint", default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret", default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token", default=os.getenv("OAI_SITES_BYPASS_TOKEN", "")); parser.add_argument("--markets", default=",".join(MARKETS)); parser.add_argument("--asset-types", default="STOCK,ETF"); parser.add_argument("--job-id", default=os.getenv("MERIDIAN_JOB_ID", "")); parser.add_argument("--component-id", default=os.getenv("MERIDIAN_COMPONENT_ID", "")); parser.add_argument("--stocks", type=int, default=int(os.getenv("MERIDIAN_STOCKS_PER_MARKET", "500"))); parser.add_argument("--etfs", type=int, default=int(os.getenv("MERIDIAN_ETFS_PER_MARKET", "100"))); parser.add_argument("--workers", type=int, default=int(os.getenv("MERIDIAN_HISTORY_WORKERS", "12"))); parser.add_argument("--loop", action="store_true"); args = parser.parse_args()
+    load_local_env(); parser = argparse.ArgumentParser(description="Meridian version-selected public market bridge")
+    parser.add_argument("--endpoint", default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret", default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token", default=os.getenv("OAI_SITES_BYPASS_TOKEN", "")); parser.add_argument("--markets", default=",".join(MARKETS)); parser.add_argument("--asset-types", default="STOCK,ETF"); parser.add_argument("--model-version", default=os.getenv("MERIDIAN_MODEL_VERSION", model_v21.MODEL_VERSION)); parser.add_argument("--job-id", default=os.getenv("MERIDIAN_JOB_ID", "")); parser.add_argument("--component-id", default=os.getenv("MERIDIAN_COMPONENT_ID", "")); parser.add_argument("--stocks", type=int, default=int(os.getenv("MERIDIAN_STOCKS_PER_MARKET", "500"))); parser.add_argument("--etfs", type=int, default=int(os.getenv("MERIDIAN_ETFS_PER_MARKET", "100"))); parser.add_argument("--workers", type=int, default=int(os.getenv("MERIDIAN_HISTORY_WORKERS", "12"))); parser.add_argument("--loop", action="store_true"); args = parser.parse_args()
     if not args.endpoint or not args.secret: parser.error("--endpoint and --secret are required")
+    try: _select_model(args.model_version)
+    except ValueError as exc: parser.error(str(exc))
     markets = [item.strip().upper() for item in args.markets.split(",") if item.strip().upper() in MARKETS]
     asset_types = [item.strip().upper() for item in args.asset_types.split(",") if item.strip().upper() in ("STOCK","ETF")]
     while True:

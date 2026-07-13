@@ -12,8 +12,8 @@ type ScanMeta = { id:string; status:string; completedAt:string|null; discoveredC
 type RankingPayload = { rankings: RankedSecurity[]; meta: { mode: string; primaryFeed: string; discovery?:string; ibkrConnected: boolean; generatedAt: string; errors?: string[]; scan?:ScanMeta|null; modelVersion?:string } };
 type ApiErrorPayload = { error?:string; errorCode?:string; errorParams?:Record<string,string|number> };
 type QuoteRefreshPayload = { scanId:string; total:number; processed:number; updated:number; failed:number; nextCursor:string|null; done:boolean; capturedAt:string };
-type AnalysisComponentPayload = { id:string; market:string; assetType:string; status:string; phase:string; total:number; processed:number; updated:number; failed:number; heartbeatAt:string|null; errorCode:string|null; errorDetail:string|null };
-type AnalysisJobPayload = { jobId:string; status:string; marketScope:string; assetScope:string; createdAt:string; completedAt:string|null; githubRunUrl:string|null; errorCode:string|null; errorDetail:string|null; components:AnalysisComponentPayload[] };
+type AnalysisComponentPayload = { id:string; modelVersion:string; market:string; assetType:string; status:string; phase:string; total:number; processed:number; updated:number; failed:number; heartbeatAt:string|null; errorCode:string|null; errorDetail:string|null };
+type AnalysisJobPayload = { jobId:string; modelVersion:string|null; status:string; marketScope:string; assetScope:string; createdAt:string; completedAt:string|null; githubRunUrl:string|null; errorCode:string|null; errorDetail:string|null; components:AnalysisComponentPayload[] };
 
 const words = {
   "zh-TW": { nav:["總覽","市場掃描","訊號中心","模擬組合","回測驗證","資料健康","設定"], shadow:"影子 BUY", public:"公開來源／延遲／暫定回測", title:"跨市場投資研究", subtitle:"v2 以真實五年量價、股票／ETF 分離模型與嚴格門檻排名；允許沒有 BUY。", scan:"重新掃描", loading:"正在向市場來源取得資料…", noData:"目前沒有可驗證資料。請稍後重試或檢查資料健康度。", market:"市場", asset:"資產", risk:"風險計畫", all:"全部", stocks:"普通股", etfs:"ETF", score:"分數", signal:"訊號", price:"價格", freshness:"資料", factors:"模型因子拆解", plan:"完整交易計畫", entry:"進場區", stop:"停損", targets:"分批目標", maxWeight:"最大倉位", reason:"判斷依據", blocked:"降為觀察", paperBuy:"模擬買進", qty:"數量", setup:"請先在設定頁輸入模擬資金。", health:"七市場資料健康", ibkr:"只使用公開資料", backtest:"暫定回測與驗證門檻", portfolio:"模擬投資組合", settings:"研究設定", save:"儲存設定", notify:"測試通知", quality:"資料完整度", sources:"來源數", bucket:"桶內排名", provisional:"公開資料回測含幸存者偏差，永遠不能解鎖 FORMAL。", disclaimer:"本系統為研究與模擬決策工具，不保證獲利；公開資料只產生影子 BUY，暫定回測不能升級正式訊號。" },
@@ -86,18 +86,18 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
   }, [market, assetType, loadRankings, x]);
 
   const loadAnalysisJob = useCallback(async (jobId?: string) => {
-    const endpoint = jobId ? `/api/scans/full/${encodeURIComponent(jobId)}` : `/api/scans/full?market=${market}&assetType=${assetType}`;
+    const endpoint = jobId ? `/api/scans/full/${encodeURIComponent(jobId)}` : `/api/scans/full?market=${market}&assetType=${assetType}&modelVersion=${encodeURIComponent(modelVersion)}`;
     const response = await fetch(endpoint, { cache:"no-store" });
     const result = await response.json() as { job?:AnalysisJobPayload|null } & ApiErrorPayload;
     if (!response.ok) throw new Error(result.error ?? x("errorGeneric"));
     setAnalysisJob(result.job ?? null);
     return result.job ?? null;
-  }, [market, assetType, x]);
+  }, [market, assetType, modelVersion, x]);
 
   async function startFullAnalysis() {
     setAnalysisStarting(true); setAnalysisMessage(""); setError("");
     try {
-      const response = await fetch("/api/scans/full", { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ market, assetType }) });
+      const response = await fetch("/api/scans/full", { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ market, assetType, modelVersion }) });
       const result = await response.json() as { job?:AnalysisJobPayload|null; reused?:boolean } & ApiErrorPayload;
       if (!response.ok) {
         if (result.errorCode?.startsWith("GITHUB_")) throw new Error(x("analysisCloudMissing"));
@@ -123,11 +123,11 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
       void loadAnalysisJob(analysisJob.jobId).then((next) => {
         if (!next || ["QUEUED", "DISPATCHED", "RUNNING"].includes(next.status)) return;
         setAnalysisMessage(next.status === "COMPLETE" ? x("analysisComplete") : next.status === "PARTIAL" ? x("analysisPartial") : x("analysisFailed"));
-        setModelVersion(CANDIDATE_MODEL_VERSION);
+        if (next.modelVersion === modelVersion) void loadRankings();
       }).catch(() => undefined);
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [analysisJob, loadAnalysisJob, loadRankings, x]);
+  }, [analysisJob, loadAnalysisJob, loadRankings, modelVersion, x]);
   useEffect(() => {
     if (view !== "security" || !instrumentId) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -209,7 +209,7 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
         {view === "health" && <HealthView locale={locale} title={t.health} ibkr={t.ibkr}/>} 
         {view === "settings" && <SettingsView locale={locale} title={t.settings} saveLabel={t.save} notifyLabel={t.notify}/>} 
       </main>
-      {analysisConfirm && <AnalysisConfirmModal locale={locale} market={market} assetType={assetType} starting={analysisStarting} onCancel={() => setAnalysisConfirm(false)} onStart={() => void startFullAnalysis()}/>}
+      {analysisConfirm && <AnalysisConfirmModal locale={locale} market={market} assetType={assetType} modelVersion={modelVersion} starting={analysisStarting} onCancel={() => setAnalysisConfirm(false)} onStart={() => void startFullAnalysis()}/>}
       <footer className="app-footer"><span>© 2026 MERIDIAN RESEARCH</span><p>{t.disclaimer}</p><Link href="/health">{x("dataStatus")} →</Link></footer>
     </div>
   );
@@ -231,16 +231,16 @@ function AnalysisProgress({ job, locale }: { job:AnalysisJobPayload; locale:Loca
     <div className="analysis-progress-head"><div><span>{statusText}</span><strong>{tx(locale,"analysisProgress",{completed:complete,total:job.components.length})}</strong></div>{job.githubRunUrl&&<a href={job.githubRunUrl} target="_blank" rel="noreferrer">GitHub Actions ↗</a>}</div>
     <div className="analysis-components">{job.components.map((item) => {
       const percent = item.total > 0 ? Math.min(100,Math.round(item.processed / item.total * 100)) : item.status === "COMPLETE" ? 100 : 0;
-      return <div key={item.id} className={`analysis-component component-${item.status.toLowerCase()}`}><div><strong>{item.market} · {codeText(locale,item.assetType)}</strong><span>{phaseLabel(locale,item.phase)} · {percent}%</span></div><i><b style={{width:`${percent}%`}}/></i>{item.errorCode&&<small>{item.errorDetail || item.errorCode}</small>}</div>;
+      return <div key={item.id} className={`analysis-component component-${item.status.toLowerCase()}`}><div><strong>{item.market} · {codeText(locale,item.assetType)} · {item.modelVersion}</strong><span>{phaseLabel(locale,item.phase)} · {percent}%</span></div><i><b style={{width:`${percent}%`}}/></i>{item.errorCode&&<small>{item.errorDetail || item.errorCode}</small>}</div>;
     })}</div>
   </section>;
 }
 
-function AnalysisConfirmModal({ locale, market, assetType, starting, onCancel, onStart }: { locale:Locale; market:string; assetType:string; starting:boolean; onCancel:()=>void; onStart:()=>void }) {
+function AnalysisConfirmModal({ locale, market, assetType, modelVersion, starting, onCancel, onStart }: { locale:Locale; market:string; assetType:string; modelVersion:string; starting:boolean; onCancel:()=>void; onStart:()=>void }) {
   const marketCount = market === "ALL" ? MARKETS.length : 1;
   const estimate = marketCount * (assetType === "STOCK" ? 500 : assetType === "ETF" ? 100 : 600);
   const scope = `${market === "ALL" ? MARKETS.join(" · ") : market} / ${assetType === "ALL" ? `${tx(locale,"stock")} + ETF` : codeText(locale,assetType)}`;
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event)=>{if(event.currentTarget===event.target&&!starting)onCancel();}}><section className="analysis-modal" role="dialog" aria-modal="true" aria-labelledby="full-analysis-title"><p>MERIDIAN / {tx(locale,"shadow")}</p><h2 id="full-analysis-title">{tx(locale,"fullAnalysisConfirmTitle")}</h2><div className="modal-warning">{tx(locale,"fullAnalysisConfirmBody")}</div><dl><div><dt>{tx(locale,"analysisScope")}</dt><dd>{scope}</dd></div><div><dt>{tx(locale,"analysisEstimate")}</dt><dd>≈ {estimate.toLocaleString(locale)}</dd></div><div><dt>{tx(locale,"analysisFirstBackfill")}</dt><dd>{tx(locale,"analysisFirstBackfillValue")}</dd></div></dl><div className="modal-actions"><button className="secondary" disabled={starting} onClick={onCancel}>{tx(locale,"cancel")}</button><button disabled={starting} onClick={onStart}>{starting ? tx(locale,"analysisQueued") : tx(locale,"startAnalysis")}</button></div></section></div>;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event)=>{if(event.currentTarget===event.target&&!starting)onCancel();}}><section className="analysis-modal" role="dialog" aria-modal="true" aria-labelledby="full-analysis-title"><p>MERIDIAN / {tx(locale,"shadow")}</p><h2 id="full-analysis-title">{tx(locale,"fullAnalysisConfirmTitle")}</h2><div className="modal-warning">{tx(locale,"fullAnalysisConfirmBody")}</div><dl><div><dt>{tx(locale,"modelTrack")}</dt><dd>{modelVersion}</dd></div><div><dt>{tx(locale,"analysisScope")}</dt><dd>{scope}</dd></div><div><dt>{tx(locale,"analysisEstimate")}</dt><dd>≈ {estimate.toLocaleString(locale)}</dd></div><div><dt>{tx(locale,"analysisFirstBackfill")}</dt><dd>{tx(locale,"analysisFirstBackfillValue")}</dd></div></dl><div className="modal-actions"><button className="secondary" disabled={starting} onClick={onCancel}>{tx(locale,"cancel")}</button><button disabled={starting} onClick={onStart}>{starting ? tx(locale,"analysisQueued") : tx(locale,"startAnalysis")}</button></div></section></div>;
 }
 
 function SecurityPanel({ security, bars, locale, t, quantity, setQuantity, onPaperBuy, standalone=false }: { security: RankedSecurity; bars:PriceBar[]; locale: Locale; t: typeof words[Locale]; quantity:number; setQuantity:(value:number)=>void; onPaperBuy:()=>void; standalone?:boolean }) {

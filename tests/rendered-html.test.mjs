@@ -40,3 +40,19 @@ test("all primary product route entrypoints exist", async () => {
   await access(new URL("../app/api/ingest/artifacts/restore/route.ts", import.meta.url));
   await access(new URL("../.github/workflows/full-analysis.yml", import.meta.url));
 });
+
+test("full analysis binds the selected model through UI, API, workflow, and Python", async () => {
+  const [app, route, workflow, bridge] = await Promise.all([
+    readFile(new URL("../components/meridian-app.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/scans/full/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../.github/workflows/full-analysis.yml", import.meta.url), "utf8"),
+    readFile(new URL("../bridge/meridian_bridge.py", import.meta.url), "utf8"),
+  ]);
+  assert.match(app, /JSON\.stringify\(\{ market, assetType, modelVersion \}\)/);
+  assert.match(app, /modelVersion=\$\{encodeURIComponent\(modelVersion\)\}/);
+  assert.match(app, /if \(next\.modelVersion === modelVersion\) void loadRankings\(\);/);
+  assert.match(route, /modelVersion: component\.model_version/);
+  assert.match(workflow, /--model-version "\$\{\{ matrix\.component\.modelVersion \}\}"/);
+  assert.match(bridge, /def _select_model\(model_version\):/);
+  assert.match(bridge, /MODEL_MODULE is model_v21/);
+});

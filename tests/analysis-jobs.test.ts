@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue, type StatementSync } from "node:sqlite";
 import test from "node:test";
 import { createAnalysisJob, expandAnalysisScope, isTerminalComponent, mergeProgressCounts, phaseIndex } from "../lib/analysis-jobs";
+import { ACTIVE_MODEL_VERSION, CANDIDATE_MODEL_VERSION } from "../lib/types";
 
 class TestStatement {
   private values:SQLInputValue[]=[];
@@ -40,16 +41,23 @@ test("terminal failure preserves the last durable progress counters", () => {
   assert.deepEqual(mergeProgressCounts(current,{total:500,processed:121,updated:91,failed:3},"RUNNING"),{total:500,processed:121,updated:91,failed:3});
 });
 
-test("overlapping full-analysis requests reuse one active market and asset component", async () => {
+test("full-analysis requests reuse only the same model, market, and asset component", async () => {
   const sqlite=new DatabaseSync(":memory:");
   sqlite.exec(`CREATE TABLE analysis_jobs(id TEXT PRIMARY KEY,user_email TEXT,trigger TEXT,market_scope TEXT,asset_scope TEXT,status TEXT,github_run_id TEXT,github_run_url TEXT,error_code TEXT,error_detail TEXT,completed_at TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE analysis_components(id TEXT PRIMARY KEY,active_key TEXT UNIQUE,model_version TEXT,market TEXT,asset_type TEXT,status TEXT,phase TEXT,total_count INTEGER DEFAULT 0,processed_count INTEGER DEFAULT 0,updated_count INTEGER DEFAULT 0,failed_count INTEGER DEFAULT 0,scan_id TEXT,github_run_id TEXT,github_run_url TEXT,heartbeat_at TEXT,started_at TEXT,completed_at TEXT,error_code TEXT,error_detail TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE analysis_job_components(job_id TEXT,component_id TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_id,component_id));`);
   const db=new TestD1(sqlite) as unknown as D1Database;
-  const first=await createAnalysisJob(db,"owner@example.com","MANUAL","TW","ETF");
-  const overlapping=await createAnalysisJob(db,"owner@example.com","MANUAL","TW","ETF");
+  const first=await createAnalysisJob(db,"owner@example.com","MANUAL","TW","ETF",ACTIVE_MODEL_VERSION);
+  const overlapping=await createAnalysisJob(db,"owner@example.com","MANUAL","TW","ETF",ACTIVE_MODEL_VERSION);
+  const candidate=await createAnalysisJob(db,"owner@example.com","MANUAL","TW","ETF",CANDIDATE_MODEL_VERSION);
   assert.equal(first.createdComponents.length,1);
   assert.equal(overlapping.createdComponents.length,0);
   assert.equal(first.components[0].id,overlapping.components[0].id);
+  assert.equal(first.components[0].model_version,ACTIVE_MODEL_VERSION);
+  assert.equal(candidate.createdComponents.length,1);
+  assert.equal(candidate.components[0].model_version,CANDIDATE_MODEL_VERSION);
+  assert.notEqual(first.components[0].id,candidate.components[0].id);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM analysis_components").get()?.count,2);
+  await assert.rejects(createAnalysisJob(db,"owner@example.com","MANUAL","TW","ETF","meridian-swing-v9.9.9"),/UNSUPPORTED_MODEL_VERSION/);
   sqlite.close();
 });
