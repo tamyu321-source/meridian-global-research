@@ -34,4 +34,5 @@ test("all primary product route entrypoints exist", async () => {
     const source = await readFile(new URL(`../app/${path}/page.tsx`, import.meta.url), "utf8");
     assert.match(source, new RegExp(`view=\\"${path}\\"`));
   }
+  await access(new URL("../app/api/paper/quotes/route.ts", import.meta.url));
 });

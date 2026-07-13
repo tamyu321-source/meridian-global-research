@@ -40,7 +40,7 @@ async function refreshPaperQuote(db:D1Database, quote:DbRow) {
 
 async function portfolioState(db:D1Database, portfolio:DbRow) {
   const portfolioId = String(portfolio.id), baseCurrency = String(portfolio.base_currency);
-  const result = await db.prepare(`SELECT p.*,s.symbol,s.name,s.market,s.currency,s.asset_type,s.sector,q.price,q.captured_at
+  const result = await db.prepare(`SELECT p.*,s.symbol,s.name,s.market,s.currency,s.asset_type,s.sector,q.price,q.source,q.freshness,q.captured_at
     FROM paper_positions p JOIN securities s ON s.instrument_id=p.instrument_id LEFT JOIN latest_quotes q ON q.instrument_id=p.instrument_id WHERE p.portfolio_id=?`).bind(portfolioId).all<DbRow>();
   const raw = result.results ?? [];
   const currencies = [...new Set(raw.map((row) => String(row.currency)))];
