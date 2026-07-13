@@ -52,7 +52,7 @@ const zhCN: Record<CopyKey,string> = {
 
 const zhTW: Record<CopyKey,string> = {
   ...zhCN,
-  language:"語言",mainNavigation:"主導覽",researchDesk:"研究工作台",dataStatus:"資料狀態",scanner:"市場掃描",signals:"訊號中心",security:"證券研究",
+  language:"語言",mainNavigation:"主導覽",researchDesk:"研究工作台",dataStatus:"資料狀態",dashboard:"總覽",scanner:"市場掃描",signals:"訊號中心",security:"證券研究",
   refreshQuotes:"更新最新行情",refreshingQuotes:"正在更新行情 {processed}/{total}",refreshComplete:"已直接從公開市場來源更新 {updated} 筆行情（{failed} 筆失敗）；模型分數仍沿用最近一次完整分析。",refreshFailed:"伺服器未能更新公開市場行情。",
   fullAnalysis:"執行完整分析",fullAnalysisConfirmTitle:"確認完整分析",fullAnalysisConfirmBody:"雲端模型會重新取得歷史量價，並計算評分、信心與交易計畫。公開資料始終只產生 SHADOW 訊號。",analysisScope:"分析範圍",analysisEstimate:"預計標的",analysisFirstBackfill:"歷史模式",analysisFirstBackfillValue:"若無雲端歷史產物則回填五年；否則採七日重疊增量更新",cancel:"取消",startAnalysis:"開始分析",analysisQueued:"雲端分析已排隊",analysisActive:"完整分析進行中",analysisProgress:"已完成 {completed}/{total} 個市場資產桶",analysisJobCount:"最近 {count} 個分析工作",analysisCloudMissing:"雲端分析尚未設定。請先連接公開 GitHub 倉庫、工作流程 Token 與 Secrets。",analysisStarted:"完整分析已啟動，重新整理頁面或登入後仍可繼續查看進度。",analysisComplete:"完整分析已完成，達標的市場資產桶已啟用。",analysisPartial:"部分分析完成；成功桶已啟用，失敗桶繼續沿用舊結果。",analysisFailed:"完整分析失敗；未啟用任何不完整結果。",analysisStalled:"分析心跳中斷；工作鎖已釋放，可以重新執行。",phaseQueued:"排隊中",phaseDiscovery:"探索證券",phaseHistory:"更新五年歷史",phaseEnrichment:"補充分類資料",phaseScoring:"評分與門檻判斷",phaseUploading:"上傳並啟用",phaseComplete:"完成",analysisTime:"模型分析時間",quoteTime:"最新行情時間",analysisPrice:"分析時價格",reanalysisRequired:"需要完整分析",reanalysisBuyBlocked:"最新價格已離開原進場區。完整分析重新計算交易計畫前，禁止新的模擬買進。",
   fullScan:"全市場掃描",discovered:"發現標的",analyzed:"完成分析",failed:"分析失敗",fallback:"備用來源",running:"執行中",universeTarget:"每個市場 500 檔股票 + 100 檔 ETF",
