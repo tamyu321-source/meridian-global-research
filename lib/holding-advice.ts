@@ -1,6 +1,7 @@
 import { MARKET_RULES } from "./market-rules";
 import { paperQuoteIsExecutable } from "./quote-freshness";
-import { RISK_PLANS, type AssetType, type MarketCode, type RiskPlanId, type TradePlan } from "./types";
+import { defaultRiskPolicy, marketLimitFor, type RiskPolicy } from "./risk-policy";
+import { type AssetType, type MarketCode, type RiskPlanId, type TradePlan } from "./types";
 
 export const HOLDING_ANALYSIS_MAX_AGE_MS = 4 * 24 * 60 * 60_000;
 
@@ -36,6 +37,8 @@ export type HoldingAdviceInput = {
   marketExposure: number;
   sectorExposure: number;
   riskPlan: RiskPlanId;
+  riskPolicy?: RiskPolicy;
+  minimumLotException?: boolean;
   quoteFreshness: string;
   quoteCapturedAt: string;
   signal: HoldingSignal | null;
@@ -102,7 +105,7 @@ function twoScoresBelow(scores: HoldingAdviceInput["recentScores"], threshold: n
 
 export function deriveHoldingAdvice(input: HoldingAdviceInput): HoldingAdvice {
   const now = input.now ?? Date.now();
-  const limits = RISK_PLANS[input.riskPlan] ?? RISK_PLANS.capital_first;
+  const limits = input.riskPolicy ?? defaultRiskPolicy(input.riskPlan);
   const currentWeightPct = pct(input.baseMarketValue, input.equity);
   const marketWeightPct = pct(input.marketExposure, input.equity);
   const sectorWeightPct = pct(input.sectorExposure, input.equity);
@@ -141,12 +144,13 @@ export function deriveHoldingAdvice(input: HoldingAdviceInput): HoldingAdvice {
   if (signal.hardGates.includes("PRICE_NOT_ABOVE_MA_SET") && signal.hardGates.includes("LONG_TREND_NOT_RISING")) reduceReasons.push("HOLDING_TREND_FAILED");
   if (target2 && input.price >= target2) reduceReasons.push("HOLDING_TARGET2_REACHED");
   else if (target1 && input.price >= target1) reduceReasons.push("HOLDING_TARGET1_REACHED");
-  const positionExcess = Math.max(0, input.baseMarketValue - input.equity * limits.maxWeightPct / 100);
-  const marketExcess = Math.max(0, input.marketExposure - input.equity * limits.maxMarketPct / 100);
+  const protectedLot=Boolean(input.minimumLotException);
+  const positionExcess = protectedLot ? 0 : Math.max(0, input.baseMarketValue - input.equity * limits.maxWeightPct / 100);
+  const marketExcess = protectedLot ? 0 : Math.max(0, input.marketExposure - input.equity * marketLimitFor(limits,input.market) / 100);
   const sectorExcess = input.sector && input.sector !== "Unclassified" ? Math.max(0, input.sectorExposure - input.equity * limits.maxSectorPct / 100) : 0;
   if (positionExcess > 0) reduceReasons.push("HOLDING_POSITION_LIMIT_EXCEEDED");
   if (marketExcess > 0) reduceReasons.push("HOLDING_MARKET_LIMIT_EXCEEDED");
-  if (sectorExcess > 0) reduceReasons.push("HOLDING_SECTOR_LIMIT_EXCEEDED");
+  if (sectorExcess > 0 && !protectedLot) reduceReasons.push("HOLDING_SECTOR_LIMIT_EXCEEDED");
   if (reduceReasons.length) {
     const targetReduction = reduceReasons.some((reason) => reason === "HOLDING_TARGET2_REACHED") ? input.baseMarketValue * .75
       : reduceReasons.some((reason) => reason === "HOLDING_TARGET1_REACHED") ? input.baseMarketValue * .5 : 0;
@@ -158,6 +162,7 @@ export function deriveHoldingAdvice(input: HoldingAdviceInput): HoldingAdvice {
   }
 
   const holdReasons = [signal.action === "WATCH" ? "HOLDING_SIGNAL_WATCH" : "HOLDING_PLAN_VALID"];
+  if(protectedLot)holdReasons.push("HOLDING_MINIMUM_LOT_CONCENTRATION");
   if (target1 && input.price < target1) holdReasons.push("HOLDING_BELOW_FIRST_TARGET");
   return { ...base, action:"HOLD", urgency:"NORMAL", reasonCodes:holdReasons, recommendedSellQuantity:0 };
 }

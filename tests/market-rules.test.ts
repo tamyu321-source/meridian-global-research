@@ -18,13 +18,18 @@ test("Japan stocks and ETFs keep separate quantity rules", () => {
 
 test("small portfolios may use one minimum board-lot exception", () => {
   assert.equal(qualifiesForMinimumLotException("CN","STOCK","BUY",100,0), true);
-  assert.equal(qualifiesForMinimumLotException("CN","STOCK","BUY",100,1), true);
+  assert.equal(qualifiesForMinimumLotException("CN","STOCK","BUY",100,1), false);
   assert.equal(qualifiesForMinimumLotException("CN","STOCK","BUY",200,0), false);
   assert.equal(qualifiesForMinimumLotException("JP","STOCK","BUY",100,0), true);
   assert.equal(qualifiesForMinimumLotException("TW","STOCK","BUY",1_000,0), false);
   const aggressiveMarketLimit = 5_000 * .6;
   assert.equal(20 * 100 <= aggressiveMarketLimit, true);
   assert.equal(35 * 100 <= aggressiveMarketLimit, false);
+});
+
+test("minimum-lot exception never applies to an additional buy", () => {
+  assert.equal(qualifiesForMinimumLotException("CN","STOCK","BUY",100,1),false);
+  assert.equal(qualifiesForMinimumLotException("JP","STOCK","BUY",100,100),false);
 });
 
 test("Taiwan applies the lower ETF sell tax and records the rule version", () => {

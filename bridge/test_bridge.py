@@ -9,7 +9,7 @@ import bridge.meridian_bridge as bridge
 from bridge.cache import MarketCache
 from bridge.meridian_bridge import ProgressReporter, _symbol_matches
 from bridge.model_v2 import CONFIG_HASH, MODEL_VERSION, number, rank_snapshots, raw_factors
-from bridge.model_v21 import MODEL_VERSION as CANDIDATE_MODEL_VERSION
+from bridge.model_v22 import MODEL_VERSION as CANDIDATE_MODEL_VERSION
 
 
 def fixture(symbol, slope=.2, asset_type="STOCK", sector="Technology", volume_multiplier=1):

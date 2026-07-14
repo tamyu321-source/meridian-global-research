@@ -105,6 +105,8 @@ jobs:
           --model-version "${{ matrix.component.modelVersion }}"
           --job-id "${{ matrix.component.jobId }}"
           --component-id "${{ matrix.component.id }}"
+          --market-profile-id "${{ matrix.component.marketProfileId }}"
+          --market-profile-hash "${{ matrix.component.marketProfileHash }}"
           --workers 12
       - name: Report abnormal termination
         if: failure()

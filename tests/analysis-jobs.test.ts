@@ -44,8 +44,9 @@ test("terminal failure preserves the last durable progress counters", () => {
 test("full-analysis requests reuse only the same model, market, and asset component", async () => {
   const sqlite=new DatabaseSync(":memory:");
   sqlite.exec(`CREATE TABLE analysis_jobs(id TEXT PRIMARY KEY,user_email TEXT,trigger TEXT,market_scope TEXT,asset_scope TEXT,status TEXT,github_run_id TEXT,github_run_url TEXT,error_code TEXT,error_detail TEXT,completed_at TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE analysis_components(id TEXT PRIMARY KEY,active_key TEXT UNIQUE,model_version TEXT,market TEXT,asset_type TEXT,status TEXT,phase TEXT,total_count INTEGER DEFAULT 0,processed_count INTEGER DEFAULT 0,updated_count INTEGER DEFAULT 0,failed_count INTEGER DEFAULT 0,scan_id TEXT,github_run_id TEXT,github_run_url TEXT,heartbeat_at TEXT,started_at TEXT,completed_at TEXT,error_code TEXT,error_detail TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE analysis_job_components(job_id TEXT,component_id TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_id,component_id));`);
+    CREATE TABLE analysis_components(id TEXT PRIMARY KEY,active_key TEXT UNIQUE,model_version TEXT,market TEXT,asset_type TEXT,status TEXT,phase TEXT,total_count INTEGER DEFAULT 0,processed_count INTEGER DEFAULT 0,updated_count INTEGER DEFAULT 0,failed_count INTEGER DEFAULT 0,scan_id TEXT,github_run_id TEXT,github_run_url TEXT,heartbeat_at TEXT,started_at TEXT,completed_at TEXT,error_code TEXT,error_detail TEXT,market_profile_id TEXT,market_profile_hash TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE analysis_job_components(job_id TEXT,component_id TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_id,component_id));
+    CREATE TABLE model_market_profiles(profile_id TEXT PRIMARY KEY,model_version TEXT,market TEXT,asset_type TEXT,config_hash TEXT,status TEXT,selected_at TEXT,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);`);
   const db=new TestD1(sqlite) as unknown as D1Database;
   const first=await createAnalysisJob(db,"owner@example.com","MANUAL","TW","ETF",ACTIVE_MODEL_VERSION);
   const overlapping=await createAnalysisJob(db,"owner@example.com","MANUAL","TW","ETF",ACTIVE_MODEL_VERSION);

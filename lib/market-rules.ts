@@ -50,7 +50,7 @@ export function qualifiesForMinimumLotException(market:MarketCode, assetType:Ass
   if (side !== "BUY") return false;
   const supported = market === "CN" || (market === "JP" && assetType === "STOCK");
   const lot = assetType === "ETF" ? MARKET_RULES[market].etfLot : MARKET_RULES[market].stockLot;
-  return Boolean(supported && lot && quantity === lot && heldQuantity < lot);
+  return Boolean(supported && lot && quantity === lot && heldQuantity === 0);
 }
 
 export function estimateMarketCosts(market: MarketCode, assetType: AssetType, side: "BUY" | "SELL", grossLocal: number, quantity: number) {

@@ -25,26 +25,28 @@ from datetime import datetime, timezone
 
 try:
     from .cache import MarketCache
-    from . import model_v2, model_v21
+    from . import model_v2, model_v21, model_v22
     from .signed_request import is_retryable_request_error, signed_json as _signed_json
 except ImportError:
     from cache import MarketCache
     import model_v2
     import model_v21
+    import model_v22
     from signed_request import is_retryable_request_error, signed_json as _signed_json
 
 SUPPORTED_MODELS = {
     model_v2.MODEL_VERSION: model_v2,
     model_v21.MODEL_VERSION: model_v21,
+    model_v22.MODEL_VERSION: model_v22,
 }
-MODEL_MODULE = model_v21
-BENCHMARK_SYMBOLS = model_v21.BENCHMARK_SYMBOLS
-build_market_context = model_v21.build_market_context
+MODEL_MODULE = model_v22
+BENCHMARK_SYMBOLS = model_v22.BENCHMARK_SYMBOLS
+build_market_context = model_v22.build_market_context
 
 
 def _select_model(model_version):
     """Select one canonical production model for the lifetime of this process."""
-    global MODEL_MODULE, CONFIG, CONFIG_HASH, MODEL_VERSION, model_identity, number, rank_snapshots, raw_factors
+    global MODEL_MODULE, CONFIG, CONFIG_HASH, MODEL_VERSION, model_identity, number, rank_snapshots, raw_factors, build_market_context, BENCHMARK_SYMBOLS
     try:
         module = SUPPORTED_MODELS[model_version]
     except KeyError as exc:
@@ -57,10 +59,12 @@ def _select_model(model_version):
     number = module.number
     rank_snapshots = module.rank_snapshots
     raw_factors = module.raw_factors
+    build_market_context = getattr(module,"build_market_context",model_v21.build_market_context)
+    BENCHMARK_SYMBOLS = getattr(module,"BENCHMARK_SYMBOLS",model_v21.BENCHMARK_SYMBOLS)
     return module
 
 
-_select_model(model_v21.MODEL_VERSION)
+_select_model(model_v22.MODEL_VERSION)
 
 MARKETS = ("US", "CN", "HK", "TW", "JP", "KR", "SG")
 MARKET = {
@@ -357,13 +361,20 @@ def upload_artifact(endpoint, secret, token, path, object_key, market, asset_typ
 
 def upload_rankings(endpoint, secret, token, scan, rankings, job_id="", component_id=""):
     batches = list(_chunks(rankings, 150)) or [[]]
+    identity=model_identity()
+    if MODEL_MODULE is model_v22:
+        selected={}
+        for item in rankings:
+            profile_id=item.get("marketProfileId")
+            if profile_id:selected[(item["market"],item["assetType"])]=model_v22.market_profile(item["market"],item["assetType"],profile_id)
+        identity={**identity,"profiles":list(selected.values())}
     for index, records in enumerate(batches):
         current = dict(scan); current["status"] = scan["status"] if index == len(batches) - 1 else "running"; current["completedAt"] = scan["completedAt"] if index == len(batches) - 1 else None
-        _signed_json(endpoint.rstrip("/") + "/api/ingest/rankings", secret, {"scan":current,"records":records,"batchIndex":index,"batchCount":len(batches),"jobId":job_id or None,"componentId":component_id or None,"model":model_identity()}, f"v2-{scan['id']}-{index:04d}", token)
+        _signed_json(endpoint.rstrip("/") + "/api/ingest/rankings", secret, {"scan":current,"records":records,"batchIndex":index,"batchCount":len(batches),"jobId":job_id or None,"componentId":component_id or None,"model":identity}, f"v2-{scan['id']}-{index:04d}", token)
     return len(batches)
 
 
-def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_token="", workers=6, asset_types=("STOCK","ETF"), job_id="", component_id=""):
+def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_token="", workers=6, asset_types=("STOCK","ETF"), job_id="", component_id="", market_profile_id="", market_profile_hash=""):
     started = datetime.now(timezone.utc); scan_id = started.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]; today = started.date().isoformat()
     asset_types = tuple(item for item in asset_types if item in ("STOCK","ETF"))
     stock_target = stock_target if "STOCK" in asset_types else 0; etf_target = etf_target if "ETF" in asset_types else 0
@@ -393,6 +404,7 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
             discovered_stocks = min(stock_target, raw_stocks); discovered_etfs = min(etf_target, raw_etfs)
             discovered_count = discovered_stocks + discovered_etfs; analyzed = len(snapshots); ratio = analyzed / discovered_count * 100 if discovered_count else 0
             coverage[market] = {"stocksDiscovered":discovered_stocks,"etfsDiscovered":discovered_etfs,"targetStocks":stock_target,"targetEtfs":etf_target,"rawStocksDiscovered":raw_stocks,"rawEtfsDiscovered":raw_etfs,"stocksAnalyzed":len(stocks),"etfsAnalyzed":len(etfs),"historyRejected":len(candidates)-len(eligible),"failed":len(market_errors),"candidateCount":len(candidates),"coveragePct":round(ratio,2),"qualityGatePassed":discovered_count > 0 and ratio >= CONFIG["completionCoveragePct"],"universeSource":MARKET[market]["universe"],"seconds":round(time.time()-market_started,1)}
+            market_latest=max((item["bars"][-1]["timestamp"] for item in snapshots),default=0);coverage[market]["tradingSessionDate"]=datetime.fromtimestamp(market_latest,timezone.utc).date().isoformat() if market_latest else None;coverage[market]["freshnessPct"]=round(sum(item["bars"][-1]["timestamp"]==market_latest for item in snapshots)/len(snapshots)*100,2) if snapshots else 0
             for current_asset in asset_types: parquet[(market,current_asset)] = cache.export_market_parquet(market, scan_id, current_asset)
             print(json.dumps({"market":market,"coverage":coverage[market]}, ensure_ascii=False), flush=True)
         reporter.report("RUNNING", "ENRICHMENT", total_target, total_target, len(all_snapshots), len(errors), scan_id)
@@ -400,7 +412,7 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
         reporter.report("RUNNING", "SCORING", total_target, total_target, len(all_snapshots), len(errors), scan_id)
         raw_by_id = {item["instrumentId"]:raw_factors(item) for item in all_snapshots}
         market_contexts = {}
-        if MODEL_MODULE is model_v21:
+        if hasattr(MODEL_MODULE,"build_market_context"):
             for market in markets:
                 market_pool = [item for item in all_snapshots if item["market"] == market]
                 try:
@@ -409,15 +421,22 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
                 except Exception as exc:
                     market_contexts[market] = build_market_context(market_pool, None, raw_by_id)
                     errors.append({"market":market,"symbol":BENCHMARK_SYMBOLS[market],"stage":"regime","error":type(exc).__name__})
-            rankings = rank_snapshots(all_snapshots, allow_buy=True, market_contexts=market_contexts, raw_by_id=raw_by_id)
+            if MODEL_MODULE is model_v22 and market_profile_id and len(markets)==1 and len(asset_types)==1:
+                profile=model_v22.market_profile(markets[0],asset_types[0],market_profile_id)
+                if market_profile_hash and profile["configHash"]!=market_profile_hash: raise ValueError("Market profile hash mismatch")
+                rankings = rank_snapshots(all_snapshots, allow_buy=True, market_contexts=market_contexts, raw_by_id=raw_by_id,profile_overrides={(markets[0],asset_types[0]):market_profile_id})
+            else: rankings = rank_snapshots(all_snapshots, allow_buy=True, market_contexts=market_contexts, raw_by_id=raw_by_id)
         else:
             rankings = rank_snapshots(all_snapshots, allow_buy=True, raw_by_id=raw_by_id)
         completed = datetime.now(timezone.utc)
         source_conflicts = sum(len(item.get("sourceConflicts") or []) for item in all_snapshots); action_anomalies = sum(len(item.get("corporateActionAnomalies") or []) for item in all_snapshots)
         complete = bool(markets) and all(coverage.get(market, {}).get("qualityGatePassed") for market in markets) and action_anomalies == 0
         status = "complete" if complete else "partial"
-        provider = "Public exchange directories + Yahoo Finance adjusted OHLCV" + (" + benchmark breadth" if MODEL_MODULE is model_v21 else "")
-        scan = {"id":scan_id,"provider":provider,"modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"validationStatus":"SHADOW","status":status,"startedAt":started.isoformat(),"completedAt":completed.isoformat(),"requestedMarkets":markets,"requestedAssetTypes":list(asset_types),"jobId":job_id or None,"componentId":component_id or None,"targetStocksPerMarket":stock_target,"targetEtfsPerMarket":etf_target,"discoveredCount":sum(v["stocksDiscovered"]+v["etfsDiscovered"] for v in coverage.values()),"analyzedCount":len(rankings),"failedCount":len(errors),"fallbackCount":0,"coverage":coverage,"marketContexts":market_contexts,"sourceConflicts":source_conflicts,"corporateActionAnomalies":action_anomalies,"qualityGatePassed":complete,"universeSnapshotDate":today}
+        provider = "Public exchange directories + Yahoo Finance adjusted OHLCV + benchmark breadth"
+        profile_ids=sorted(set(item.get("marketProfileId") for item in rankings if item.get("marketProfileId"))); profile_hashes=sorted(set(item.get("marketProfileHash") for item in rankings if item.get("marketProfileHash")))
+        latest_session_timestamp=max((item["bars"][-1]["timestamp"] for item in all_snapshots),default=0);trading_session_date=datetime.fromtimestamp(latest_session_timestamp,timezone.utc).date().isoformat() if latest_session_timestamp else None
+        freshness_pct=round(sum(item["bars"][-1]["timestamp"]==latest_session_timestamp for item in all_snapshots)/len(all_snapshots)*100,2) if all_snapshots else 0
+        scan = {"id":scan_id,"provider":provider,"modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"marketProfileId":profile_ids[0] if len(profile_ids)==1 else None,"marketProfileHash":profile_hashes[0] if len(profile_hashes)==1 else None,"validationStatus":"SHADOW","status":status,"startedAt":started.isoformat(),"completedAt":completed.isoformat(),"requestedMarkets":markets,"requestedAssetTypes":list(asset_types),"jobId":job_id or None,"componentId":component_id or None,"targetStocksPerMarket":stock_target,"targetEtfsPerMarket":etf_target,"discoveredCount":sum(v["stocksDiscovered"]+v["etfsDiscovered"] for v in coverage.values()),"analyzedCount":len(rankings),"failedCount":len(errors),"fallbackCount":0,"coverage":coverage,"marketContexts":market_contexts,"sourceConflicts":source_conflicts,"corporateActionAnomalies":action_anomalies,"qualityGatePassed":complete,"universeSnapshotDate":today,"tradingSessionDate":trading_session_date,"dataFreshnessPct":freshness_pct,"recomputationConsistencyPct":100}
         reporter.report("RUNNING", "UPLOADING", total_target, total_target, len(rankings), len(errors), scan_id)
         for (market,current_asset), path in parquet.items():
             upload_artifact(endpoint, secret, sites_token, path, f"history/{MODEL_VERSION}/{scan_id}/{market}/{current_asset}.parquet", market, current_asset, scan_id)
@@ -434,14 +453,14 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
 
 def main():
     load_local_env(); parser = argparse.ArgumentParser(description="Meridian version-selected public market bridge")
-    parser.add_argument("--endpoint", default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret", default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token", default=os.getenv("OAI_SITES_BYPASS_TOKEN", "")); parser.add_argument("--markets", default=",".join(MARKETS)); parser.add_argument("--asset-types", default="STOCK,ETF"); parser.add_argument("--model-version", default=os.getenv("MERIDIAN_MODEL_VERSION", model_v21.MODEL_VERSION)); parser.add_argument("--job-id", default=os.getenv("MERIDIAN_JOB_ID", "")); parser.add_argument("--component-id", default=os.getenv("MERIDIAN_COMPONENT_ID", "")); parser.add_argument("--stocks", type=int, default=int(os.getenv("MERIDIAN_STOCKS_PER_MARKET", "500"))); parser.add_argument("--etfs", type=int, default=int(os.getenv("MERIDIAN_ETFS_PER_MARKET", "100"))); parser.add_argument("--workers", type=int, default=int(os.getenv("MERIDIAN_HISTORY_WORKERS", "12"))); parser.add_argument("--loop", action="store_true"); args = parser.parse_args()
+    parser.add_argument("--endpoint", default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret", default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token", default=os.getenv("OAI_SITES_BYPASS_TOKEN", "")); parser.add_argument("--markets", default=",".join(MARKETS)); parser.add_argument("--asset-types", default="STOCK,ETF"); parser.add_argument("--model-version", default=os.getenv("MERIDIAN_MODEL_VERSION", model_v22.MODEL_VERSION)); parser.add_argument("--job-id", default=os.getenv("MERIDIAN_JOB_ID", "")); parser.add_argument("--component-id", default=os.getenv("MERIDIAN_COMPONENT_ID", "")); parser.add_argument("--market-profile-id",default=os.getenv("MERIDIAN_MARKET_PROFILE_ID","")); parser.add_argument("--market-profile-hash",default=os.getenv("MERIDIAN_MARKET_PROFILE_HASH","")); parser.add_argument("--stocks", type=int, default=int(os.getenv("MERIDIAN_STOCKS_PER_MARKET", "500"))); parser.add_argument("--etfs", type=int, default=int(os.getenv("MERIDIAN_ETFS_PER_MARKET", "100"))); parser.add_argument("--workers", type=int, default=int(os.getenv("MERIDIAN_HISTORY_WORKERS", "12"))); parser.add_argument("--loop", action="store_true"); args = parser.parse_args()
     if not args.endpoint or not args.secret: parser.error("--endpoint and --secret are required")
     try: _select_model(args.model_version)
     except ValueError as exc: parser.error(str(exc))
     markets = [item.strip().upper() for item in args.markets.split(",") if item.strip().upper() in MARKETS]
     asset_types = [item.strip().upper() for item in args.asset_types.split(",") if item.strip().upper() in ("STOCK","ETF")]
     while True:
-        try: run_full_scan(markets, max(1,args.stocks), max(0,args.etfs), args.endpoint, args.secret, args.sites_token, max(1,args.workers), asset_types, args.job_id, args.component_id)
+        try: run_full_scan(markets, max(1,args.stocks), max(0,args.etfs), args.endpoint, args.secret, args.sites_token, max(1,args.workers), asset_types, args.job_id, args.component_id,args.market_profile_id,args.market_profile_hash)
         except Exception as exc:
             print(json.dumps({"status":"error","type":type(exc).__name__,"message":str(exc)}), flush=True)
             if not args.loop: raise

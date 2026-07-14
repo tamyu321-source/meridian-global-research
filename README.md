@@ -29,23 +29,34 @@ This starter does not use `wrangler.jsonc`.
 - **Run full analysis** creates durable D1 jobs and dispatches
   `.github/workflows/full-analysis.yml`. The runner restores the last successful
   market/asset Parquet from R2, downloads a seven-day overlap (or the first five
-  years), and invokes the reliability-first candidate in `bridge/model_v21.py`
+  years), and invokes the reliability-first market-profile model in
+  `bridge/model_v22.py`
   through `bridge/meridian_bridge.py`.
-- `meridian-swing-v2.0.0` remains the active paper-trading model. The UI can
-  inspect `meridian-swing-v2.1.0` independently, but v2.1 cannot replace v2.0
-  until its provisional comparison backtest and 30 trading-day shadow
-  validation pass.
-- v2.1 separates research ranking from entry timing. Only a confirmed
+- `meridian-swing-v2.2.0` uses one canonical calculation engine with fourteen
+  immutable market/asset profiles. Each bucket is calibrated from the locked
+  3x3 candidate grid, evaluated on the untouched final two years, and then
+  shadow-validated for 30 trading days. Only that bucket replaces v2.0 after it
+  reaches `ACTIVE_SHADOW`; v2.1 is audit-only and no longer creates scans.
+- v2.2 separates research ranking from entry timing. Only a confirmed
   volume breakout or healthy pullback can be a SHADOW BUY; overextension,
   shock cooling, missing breadth, neutral breakout attempts and risk-off
   regimes remain WATCH.
+- Owner settings define the enabled investment markets and a versioned custom
+  risk policy. All seven markets remain researchable, while paper BUY is
+  rejected outside the selected set. Single-trade stop risk, position, sector,
+  per-market and drawdown limits are revalidated on the server; SELL is never
+  blocked by a newly tightened policy.
+- China and Japan stock orders may use the audited first-board-lot exception.
+  It can exceed exposure limits only for exactly one initial trading unit and
+  cannot bypass stop risk, drawdown, cash, quote, signal or entry-zone gates.
 - Stock and ETF buckets activate independently only after at least 95% of the
   discovered pool is analyzed and no major corporate-action anomaly exists.
 - Public-source output is permanently `SHADOW`; no broker order is submitted.
 - A new paper BUY is blocked when the latest quote has left the original entry
   zone. Paper SELL remains available.
-- `.github/workflows/provisional-backtest.yml` runs both v2.0 and v2.1 against
-  the same public universe and stores setup-level trades and comparison metrics.
+- `.github/workflows/provisional-backtest.yml` performs the constrained v2.2
+  profile calibration, then runs v2.0 and the selected v2.2 profile against the
+  same locked public-data OOS universe and stores setup-level evidence.
   Each market is an independent checkpoint, at most two markets run in
   parallel, and the final upload is rejected unless all seven shards exist.
   History is restored from R2 when available, Yahoo downloads use bounded

@@ -1,0 +1,1 @@
+ALTER TABLE `paper_orders` ADD `config_hash` text;

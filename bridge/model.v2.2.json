@@ -1,0 +1,41 @@
+{
+  "modelVersion": "meridian-swing-v2.2.0",
+  "profileHashSeed": "meridian-v2.2-profile-v1",
+  "validationStatus": "SHADOW",
+  "candidateOnly": true,
+  "historyYears": 5,
+  "minimumTradingDays": 252,
+  "completionCoveragePct": 95,
+  "shadowCompletenessPct": 98,
+  "stockBuyLimitPerMarket": 3,
+  "etfBuyLimitPerMarket": 1,
+  "minimumStopPct": 1.25,
+  "maximumStopPct": 8,
+  "strategyFamilies": {
+    "STOCK": {
+      "TREND": {"trend":0.30,"momentum":0.25,"relativeStrength":0.20,"liquidity":0.10,"risk":0.10,"regime":0.05},
+      "BALANCED": {"trend":0.25,"momentum":0.25,"relativeStrength":0.15,"liquidity":0.10,"risk":0.15,"regime":0.10},
+      "DEFENSIVE_PULLBACK": {"trend":0.20,"momentum":0.20,"relativeStrength":0.15,"liquidity":0.10,"risk":0.20,"regime":0.15}
+    },
+    "ETF": {
+      "TREND": {"trend":0.30,"momentum":0.20,"relativeStrength":0.15,"liquidity":0.20,"risk":0.10,"structure":0.05},
+      "BALANCED": {"trend":0.25,"momentum":0.20,"relativeStrength":0.15,"liquidity":0.20,"risk":0.15,"structure":0.05},
+      "DEFENSIVE_PULLBACK": {"trend":0.20,"momentum":0.15,"relativeStrength":0.15,"liquidity":0.25,"risk":0.20,"structure":0.05}
+    }
+  },
+  "gatePresets": {
+    "CONSERVATIVE": {"buyScore":84,"buyConfidence":85,"minimumRelativeStrength":75,"maximumExtensionAtr":1.5,"maximumGapAtr":0.5,"maximumRangeAtr":2.0,"breakoutVolumeRatio":1.75,"breakoutCloseLocation":0.80,"pullbackToleranceAtr":0.5,"pullbackMaximumDrawdownPct":4,"pullbackCloseLocation":0.65,"coolingSessions":5,"riskOnBreadthPct":60,"riskOffBreadthPct":45,"crashReturn20Pct":-6,"crashVolatilityPct":25},
+    "CORE": {"buyScore":80,"buyConfidence":80,"minimumRelativeStrength":70,"maximumExtensionAtr":2.0,"maximumGapAtr":0.75,"maximumRangeAtr":2.5,"breakoutVolumeRatio":1.5,"breakoutCloseLocation":0.75,"pullbackToleranceAtr":0.75,"pullbackMaximumDrawdownPct":6,"pullbackCloseLocation":0.60,"coolingSessions":3,"riskOnBreadthPct":50,"riskOffBreadthPct":40,"crashReturn20Pct":-8,"crashVolatilityPct":30},
+    "VOLATILITY_ADJUSTED": {"buyScore":82,"buyConfidence":82,"minimumRelativeStrength":70,"maximumExtensionAtr":1.75,"maximumGapAtr":1.0,"maximumRangeAtr":3.0,"breakoutVolumeRatio":1.6,"breakoutCloseLocation":0.80,"pullbackToleranceAtr":1.0,"pullbackMaximumDrawdownPct":8,"pullbackCloseLocation":0.65,"coolingSessions":5,"riskOnBreadthPct":55,"riskOffBreadthPct":35,"crashReturn20Pct":-10,"crashVolatilityPct":35}
+  },
+  "profileSelection": {
+    "US:STOCK":["TREND","CORE"], "US:ETF":["TREND","CORE"],
+    "CN:STOCK":["DEFENSIVE_PULLBACK","VOLATILITY_ADJUSTED"], "CN:ETF":["BALANCED","VOLATILITY_ADJUSTED"],
+    "HK:STOCK":["DEFENSIVE_PULLBACK","CONSERVATIVE"], "HK:ETF":["DEFENSIVE_PULLBACK","CONSERVATIVE"],
+    "TW:STOCK":["TREND","VOLATILITY_ADJUSTED"], "TW:ETF":["BALANCED","CORE"],
+    "JP:STOCK":["BALANCED","CORE"], "JP:ETF":["TREND","CORE"],
+    "KR:STOCK":["DEFENSIVE_PULLBACK","VOLATILITY_ADJUSTED"], "KR:ETF":["BALANCED","VOLATILITY_ADJUSTED"],
+    "SG:STOCK":["DEFENSIVE_PULLBACK","CONSERVATIVE"], "SG:ETF":["DEFENSIVE_PULLBACK","CORE"]
+  },
+  "promotionGates": {"minimumOosProfitFactor":1.2,"minimumOosSharpe":0.8,"minimumTradesPerBucket":40,"maximumDrawdownPct":10,"minimumDrawdownReductionPct":15,"minimumFalseBreakoutReductionPct":15,"shadowTradingDays":30}
+}

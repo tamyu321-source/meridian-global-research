@@ -49,7 +49,7 @@ test("holding actions and evidence are localized", () => {
   assert.equal(codeText("ko","HOLDING_PLAN_VALID"), "추세와 위험 조건이 유효합니다");
 });
 
-test("v2.1 entry states and model-lock copy are localized", () => {
+test("v2.2 entry states, profile status and model-lock copy are localized", () => {
   assert.equal(codeText("zh-TW","BREAKOUT_READY"), "高品質放量突破，可以進場");
   assert.equal(codeText("zh-CN","OVEREXTENDED"), "趋势良好但过度延伸，至少等待三个交易日");
   assert.match(codeText("ja","BLOCKED_REGIME"), /市場状態/);
@@ -58,7 +58,18 @@ test("v2.1 entry states and model-lock copy are localized", () => {
     assert.notEqual(tx(locale,"candidateLocked"), "");
     assert.notEqual(tx(locale,"entryQuality"), "");
     assert.notEqual(tx(locale,"chart5y"), "");
+    assert.notEqual(tx(locale,"investmentMarkets"), "");
+    assert.notEqual(tx(locale,"customRiskPolicy"), "");
+    assert.match(tx(locale,"riskPolicyPreview",{position:12,sector:40,marketTotal:80,cash:20}), /12/);
+    assert.notEqual(tx(locale,"riskPolicyConflictPreview"), "");
+    assert.notEqual(codeText(locale,"ACTIVE_SHADOW"), "ACTIVE SHADOW");
   }
+});
+
+test("custom risk-policy errors are localized", () => {
+  assert.match(apiErrorText("zh-TW",{errorCode:"MARKET_NOT_ENABLED",errorParams:{market:"CN"}}),/CN/);
+  assert.match(apiErrorText("ja",{errorCode:"TRADE_RISK_LIMIT",errorParams:{riskPct:1.4,max:1,maximumQuantity:80,minimumCapital:6000}}),/80/);
+  assert.match(apiErrorText("ko",{errorCode:"RISK_POLICY_INVALID",errorParams:{rule:"RISK_LIMIT_RANGE"}}),/RISK_LIMIT_RANGE/);
 });
 
 test("a quote outside the analyzed entry zone has a localized paper-buy error", () => {

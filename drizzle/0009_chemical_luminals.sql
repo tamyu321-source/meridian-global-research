@@ -1,0 +1,1 @@
+ALTER TABLE `scan_runs` ADD `trading_session_date` text;

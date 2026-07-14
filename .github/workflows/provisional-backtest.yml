@@ -1,4 +1,4 @@
-name: Meridian provisional v2.1 backtest
+name: Meridian provisional v2.2 market-profile backtest
 
 on:
   workflow_dispatch:
@@ -35,14 +35,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: meridian-v2-1-provisional-backtest
+  group: meridian-v2-2-provisional-backtest
   cancel-in-progress: false
 
 jobs:
   market:
     name: ${{ matrix.market }} shard
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -117,7 +117,7 @@ jobs:
           if [[ "$PUBLISH_RESULTS" == "true" ]]; then extra=(); fi
           python -X faulthandler -m bridge.backtest \
             --aggregate-dir backtest-shards \
-            --output backtest-result-v2.1.json \
+            --output backtest-result-v2.2.json \
             --endpoint "$MERIDIAN_ENDPOINT" \
             --secret "$INGEST_HMAC_SECRET" \
             --sites-token "$OAI_SITES_BYPASS_TOKEN" \
@@ -125,7 +125,7 @@ jobs:
       - name: Save aggregate evidence
         uses: actions/upload-artifact@v4.6.2
         with:
-          name: backtest-v2.1-aggregate
-          path: backtest-result-v2.1.json
+          name: backtest-v2.2-aggregate
+          path: backtest-result-v2.2.json
           if-no-files-found: error
           retention-days: 30

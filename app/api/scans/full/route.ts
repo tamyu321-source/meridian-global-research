@@ -37,7 +37,7 @@ export async function POST(request: Request) {
   catch (error) { return jsonError(error instanceof Error ? error.message : "Invalid analysis scope", 400); }
   const newIds = created.createdComponents.map((component) => component.id);
   if (newIds.length) {
-    const components = created.createdComponents.map((component) => ({ id: component.id, modelVersion: component.model_version, market: component.market, assetType: component.asset_type }));
+    const components = created.createdComponents.map((component) => ({ id: component.id, modelVersion: component.model_version, market: component.market, assetType: component.asset_type, marketProfileId:component.market_profile_id??null,marketProfileHash:component.market_profile_hash??null }));
     try {
       const dispatched = await dispatchFullAnalysis({
         job_id: created.jobId,

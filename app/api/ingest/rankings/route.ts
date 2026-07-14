@@ -1,6 +1,7 @@
 import { activateScanOutputs, persistCompactRankings, recordAudit, upsertScanRun, type ScanSummary } from "@/lib/repository";
+import { marketProfileIdentity } from "@/lib/model-profiles";
 import { jsonError, runtimeEnv, verifyHmac } from "@/lib/server";
-import { MARKETS, isSupportedModelVersion, type RankedSecurity } from "@/lib/types";
+import { CANDIDATE_MODEL_VERSION, MARKETS, isSupportedModelVersion, type AssetType, type GatePreset, type MarketCode, type RankedSecurity, type StrategyFamily } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,7 @@ export async function POST(request: Request) {
   if (!verification.ok) return jsonError(verification.reason ?? "Unauthorized", 401);
   const idempotencyKey = request.headers.get("x-idempotency-key");
   if (!idempotencyKey || idempotencyKey.length > 160) return jsonError("Valid X-Idempotency-Key required", 400);
-  let payload: { scan?: ScanSummary; records?: RankedSecurity[]; batchIndex?: number; batchCount?: number; jobId?: string; componentId?: string; model?: { modelVersion:string; configHash:string; config:unknown } };
+  let payload: { scan?: ScanSummary; records?: RankedSecurity[]; batchIndex?: number; batchCount?: number; jobId?: string; componentId?: string; model?: { modelVersion:string; configHash:string; config:unknown; profiles?:Array<Record<string,unknown>> } };
   try { payload = JSON.parse(body) as typeof payload; } catch { return jsonError("Invalid JSON", 400); }
   const records = Array.isArray(payload.records) ? payload.records.slice(0, 250) : [];
   const scan = payload.scan;
@@ -20,15 +21,16 @@ export async function POST(request: Request) {
   if (!scan?.id || !scan.provider || !scan.startedAt || !Array.isArray(scan.requestedMarkets)) return jsonError("Valid scan metadata required", 400);
   if (!['running','complete','partial','failed'].includes(scan.status)) return jsonError("Invalid scan status", 400);
   if (scan.requestedMarkets.some((market) => !MARKETS.includes(market))) return jsonError("Invalid scan market", 400);
-  if (!isSupportedModelVersion(scan.modelVersion) || records.some((item) => !item.instrumentId || !MARKETS.includes(item.market) || item.modelVersion !== scan.modelVersion || item.status !== "SHADOW" || !item.assetModel || !item.configHash)) return jsonError("Invalid v2 ranking record", 400);
+  if (!isSupportedModelVersion(scan.modelVersion) || records.some((item) => !item.instrumentId || !MARKETS.includes(item.market) || item.modelVersion !== scan.modelVersion || item.status !== "SHADOW" || !item.assetModel || !item.configHash || (scan.modelVersion.endsWith("v2.2.0")&&(!item.marketProfileId||!item.marketProfileHash)))) return jsonError("Invalid v2 ranking record", 400);
+  if(scan.modelVersion===CANDIDATE_MODEL_VERSION){for(const item of records){let expected;try{expected=await marketProfileIdentity(item.market as MarketCode,item.assetType as AssetType,String(item.strategyFamily) as StrategyFamily,String(item.gatePreset) as GatePreset);}catch{return jsonError("Unsupported ranking market profile",400);}if(item.marketProfileId!==expected.profileId||item.marketProfileHash!==expected.configHash||item.configHash!==expected.configHash||scan.marketProfileId!==expected.profileId||scan.marketProfileHash!==expected.configHash)return jsonError("Ranking market profile hash mismatch",409);}}
   if (scan.status === "complete" && (!scan.qualityGatePassed || scan.corporateActionAnomalies)) return jsonError("Complete scan must pass v2 quality gates", 400);
   if (!Number.isInteger(batchIndex) || !Number.isInteger(batchCount) || batchIndex < 0 || batchCount < 1 || batchIndex >= batchCount || (batchIndex < batchCount - 1 && scan.status !== "running") || (batchIndex === batchCount - 1 && scan.status === "running")) return jsonError("Invalid ranking batch state", 400);
   const runtime = runtimeEnv();
   if (!runtime.DB) return jsonError("D1 unavailable", 503);
   if (Boolean(payload.jobId) !== Boolean(payload.componentId)) return jsonError("jobId and componentId must be supplied together", 400);
   if (payload.jobId && payload.componentId) {
-    const component = await runtime.DB.prepare(`SELECT c.market,c.asset_type,c.model_version FROM analysis_components c JOIN analysis_job_components jc ON jc.component_id=c.id WHERE jc.job_id=? AND c.id=?`).bind(payload.jobId, payload.componentId).first<Record<string, unknown>>();
-    if (!component || scan.modelVersion !== component.model_version || scan.requestedMarkets.length !== 1 || scan.requestedMarkets[0] !== component.market || !(scan.requestedAssetTypes ?? []).includes(String(component.asset_type) as "STOCK" | "ETF")) return jsonError("Analysis component scope mismatch", 409);
+    const component = await runtime.DB.prepare(`SELECT c.market,c.asset_type,c.model_version,c.market_profile_id,c.market_profile_hash FROM analysis_components c JOIN analysis_job_components jc ON jc.component_id=c.id WHERE jc.job_id=? AND c.id=?`).bind(payload.jobId, payload.componentId).first<Record<string, unknown>>();
+    if (!component || scan.modelVersion !== component.model_version || scan.requestedMarkets.length !== 1 || scan.requestedMarkets[0] !== component.market || !(scan.requestedAssetTypes ?? []).includes(String(component.asset_type) as "STOCK" | "ETF") || (component.market_profile_id&&scan.marketProfileId!==component.market_profile_id) || (component.market_profile_hash&&scan.marketProfileHash!==component.market_profile_hash)) return jsonError("Analysis component scope mismatch", 409);
     scan.jobId = payload.jobId; scan.componentId = payload.componentId;
   }
   const duplicate = await runtime.DB.prepare("SELECT idempotency_key FROM ingest_events WHERE idempotency_key=?").bind(idempotencyKey).first();

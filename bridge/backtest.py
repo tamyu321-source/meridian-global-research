@@ -1,4 +1,4 @@
-"""Resumable, market-sharded v2.1 walk-forward comparison against v2.0."""
+"""Resumable, market-sharded v2.2 market-profile comparison against v2.0."""
 from __future__ import annotations
 
 import argparse
@@ -29,9 +29,9 @@ try:
     )
     from .model_v2 import rank_snapshots as rank_v20
     from .model_v2 import raw_factors as raw_v20
-    from .model_v21 import CONFIG_HASH, MODEL_VERSION, build_market_context
-    from .model_v21 import rank_snapshots as rank_v21
-    from .model_v21 import raw_factors as raw_v21
+    from .model_v22 import CONFIG_HASH, MODEL_VERSION, MARKET_PROFILES, build_market_context, choose_calibrated_profile, market_profile, profile_candidates
+    from .model_v22 import rank_snapshots as rank_v22
+    from .model_v22 import raw_factors as raw_v22
 except ImportError:
     from cache import MarketCache
     from meridian_bridge import (
@@ -46,9 +46,9 @@ except ImportError:
     )
     from model_v2 import rank_snapshots as rank_v20
     from model_v2 import raw_factors as raw_v20
-    from model_v21 import CONFIG_HASH, MODEL_VERSION, build_market_context
-    from model_v21 import rank_snapshots as rank_v21
-    from model_v21 import raw_factors as raw_v21
+    from model_v22 import CONFIG_HASH, MODEL_VERSION, MARKET_PROFILES, build_market_context, choose_calibrated_profile, market_profile, profile_candidates
+    from model_v22 import rank_snapshots as rank_v22
+    from model_v22 import raw_factors as raw_v22
 
 BASELINE_MODEL_VERSION = "meridian-swing-v2.0.0"
 MARKET_COSTS = {
@@ -98,7 +98,26 @@ def _slice(item, stamp):
     return {**public,"bars":bars,"_barsValidated":True,"historicalHigh5y":prefix[index],"price":bars[-1]["close"],"previousClose":bars[-2]["close"],"capturedAt":datetime.fromtimestamp(stamp,timezone.utc).isoformat()},future
 
 
-def walk_forward(snapshots, benchmark, market, candidate=True, evaluation_sessions=504, progress_every=50):
+def _advance_positions(ranks,next_bars,positions,trades,market,signal_stamp,entry_min_stamp,sample,entry_max_stamp=None):
+    costs=MARKET_COSTS[market]
+    for rank in ranks:
+        next_bar=next_bars.get(rank["symbol"])
+        if not next_bar: continue
+        position=positions.get(rank["symbol"])
+        if position:
+            position["holdingSessions"]+=1; exit_price=None; reason=None
+            if next_bar["low"]<=position["stop"]: exit_price,reason=position["stop"],"STOP_FIRST"
+            elif next_bar["high"]>=position["target2"]: exit_price,reason=position["target2"],"TARGET_2"
+            elif rank["score"]<50 or position["holdingSessions"]>=60: exit_price,reason=next_bar["open"],"MODEL_EXIT"
+            if exit_price:
+                exit_price*=1-costs["slippageBps"]/10000; gross=exit_price/position["entry"]-1; fees=(costs["commissionBps"]*2+costs["sellTaxBps"])/10000
+                trades.append({**position,"exitAt":next_bar["timestamp"],"exit":round(exit_price,4),"returnPct":round((gross-fees)*100,3),"exitReason":reason}); del positions[rank["symbol"]]
+        elif rank["action"]=="BUY" and len(positions)<10 and next_bar["timestamp"]>=entry_min_stamp and (entry_max_stamp is None or next_bar["timestamp"]<entry_max_stamp):
+            entry=next_bar["open"]*(1+costs["slippageBps"]/10000); setup=rank.get("setupMetrics") or {}
+            positions[rank["symbol"]]={"market":market,"assetType":rank["assetType"],"symbol":rank["symbol"],"marketProfileId":rank.get("marketProfileId"),"marketProfileHash":rank.get("marketProfileHash"),"strategyFamily":rank.get("strategyFamily"),"gatePreset":rank.get("gatePreset"),"entryAt":next_bar["timestamp"],"signalAt":signal_stamp,"entry":round(entry,4),"stop":rank["tradePlan"]["stop"],"target1":rank["tradePlan"]["target1"],"target2":rank["tradePlan"]["target2"],"entryState":rank.get("entryState","LEGACY_V2"),"extensionAtr":setup.get("extensionAtr",0),"setupMetrics":setup,"holdingSessions":0,"sample":sample}
+
+
+def walk_forward(snapshots, benchmark, market, candidate=True, evaluation_sessions=504, progress_every=50, profile_overrides=None):
     """Run locked OOS sessions with close signals, next-open fills and stop-first ambiguity."""
     by_symbol={item["symbol"]:item for item in snapshots}; dates=sorted(set(bar["timestamp"] for item in snapshots for bar in item["bars"]))
     if not dates: return []
@@ -113,34 +132,47 @@ def walk_forward(snapshots, benchmark, market, candidate=True, evaluation_sessio
             if sliced: slices.append(sliced); next_bars[symbol]=future
         if not slices: continue
         if candidate:
-            raw_by_id={item["instrumentId"]:raw_v21(item) for item in slices}
+            raw_by_id={item["instrumentId"]:raw_v22(item) for item in slices}
             benchmark_slice,_=_slice(benchmark,stamp)
-            benchmark_raw=raw_v21(benchmark_slice) if benchmark_slice else None
+            benchmark_raw=raw_v22(benchmark_slice) if benchmark_slice else None
             context=build_market_context(slices,benchmark_slice,raw_by_id,benchmark_raw)
-            ranks=rank_v21(slices,allow_buy=True,market_contexts={market:context},raw_by_id=raw_by_id)
+            ranks=rank_v22(slices,allow_buy=True,market_contexts={market:context},raw_by_id=raw_by_id,profile_overrides=profile_overrides)
         else:
             raw_by_id={item["instrumentId"]:raw_v20(item) for item in slices}
             ranks=rank_v20(slices,allow_buy=True,raw_by_id=raw_by_id)
-        costs=MARKET_COSTS[market]
-        for rank in ranks:
-            next_bar=next_bars.get(rank["symbol"])
-            if not next_bar: continue
-            position=positions.get(rank["symbol"])
-            if position:
-                position["holdingSessions"]+=1; exit_price=None; reason=None
-                if next_bar["low"]<=position["stop"]: exit_price,reason=position["stop"],"STOP_FIRST"
-                elif next_bar["high"]>=position["target2"]: exit_price,reason=position["target2"],"TARGET_2"
-                elif rank["score"]<50 or position["holdingSessions"]>=60: exit_price,reason=next_bar["open"],"MODEL_EXIT"
-                if exit_price:
-                    exit_price*=1-costs["slippageBps"]/10000; gross=exit_price/position["entry"]-1; fees=(costs["commissionBps"]*2+costs["sellTaxBps"])/10000
-                    trades.append({**position,"exitAt":next_bar["timestamp"],"exit":round(exit_price,4),"returnPct":round((gross-fees)*100,3),"exitReason":reason}); del positions[rank["symbol"]]
-            elif rank["action"]=="BUY" and len(positions)<10 and next_bar["timestamp"]>=split:
-                entry=next_bar["open"]*(1+costs["slippageBps"]/10000); setup=rank.get("setupMetrics") or {}
-                positions[rank["symbol"]]={"market":market,"assetType":rank["assetType"],"symbol":rank["symbol"],"entryAt":next_bar["timestamp"],"signalAt":stamp,"entry":round(entry,4),"stop":rank["tradePlan"]["stop"],"target1":rank["tradePlan"]["target1"],"target2":rank["tradePlan"]["target2"],"entryState":rank.get("entryState","LEGACY_V2"),"extensionAtr":setup.get("extensionAtr",0),"setupMetrics":setup,"holdingSessions":0,"sample":"OOS"}
+        _advance_positions(ranks,next_bars,positions,trades,market,stamp,split,"OOS")
         if progress_every and (date_index%progress_every==0 or date_index==len(evaluation_dates)-1):
             _progress("SIMULATION",market=market,modelVersion=label,sessionsProcessed=min(date_index+1,len(evaluation_dates)-1),sessionsTotal=max(0,len(evaluation_dates)-1),trades=len(trades),openPositions=len(positions))
     _progress("SIMULATION_COMPLETE",market=market,modelVersion=label,trades=len(trades),openPositions=len(positions))
     return trades
+
+
+def calibrate_market_profiles(snapshots,benchmark,market,evaluation_sessions=504,progress_every=40):
+    """Evaluate the locked 3x3 candidate grid only before the OOS split."""
+    dates=sorted(set(bar["timestamp"] for item in snapshots for bar in item["bars"])); split_index=max(0,len(dates)-max(1,evaluation_sessions))
+    if split_index<=252:return {},{asset:{"selectedProfileId":None,"passed":False,"candidates":{}} for asset in ("STOCK","ETF")}
+    split=dates[split_index]; calibration_dates=dates[251:split_index]
+    selected={}; evidence={}
+    for asset_type in ("STOCK","ETF"):
+        asset_snapshots=[item for item in snapshots if item["assetType"]==asset_type]
+        candidates=profile_candidates(market,asset_type); positions={item["profileId"]:{} for item in candidates}; trades={item["profileId"]:[] for item in candidates}
+        _progress("CALIBRATION_START",market=market,assetType=asset_type,candidates=len(candidates),sessions=len(calibration_dates),securities=len(asset_snapshots))
+        for date_index,stamp in enumerate(calibration_dates):
+            slices=[];next_bars={}
+            for item in asset_snapshots:
+                sliced,future=_slice(item,stamp)
+                if sliced:slices.append(sliced);next_bars[item["symbol"]]=future
+            if not slices:continue
+            raw_by_id={item["instrumentId"]:raw_v22(item) for item in slices}; benchmark_slice,_=_slice(benchmark,stamp);benchmark_raw=raw_v22(benchmark_slice) if benchmark_slice else None;context=build_market_context(slices,benchmark_slice,raw_by_id,benchmark_raw)
+            for profile in candidates:
+                ranks=rank_v22(slices,allow_buy=True,market_contexts={market:context},raw_by_id=raw_by_id,profile_overrides={(market,asset_type):profile["profileId"]})
+                _advance_positions(ranks,next_bars,positions[profile["profileId"]],trades[profile["profileId"]],market,stamp,calibration_dates[0],"CALIBRATION",split)
+            if progress_every and (date_index%progress_every==0 or date_index==len(calibration_dates)-1):_progress("CALIBRATION",market=market,assetType=asset_type,sessionsProcessed=date_index+1,sessionsTotal=len(calibration_dates))
+        metrics={profile_id:_metrics(values) for profile_id,values in trades.items()}; selected_id=choose_calibrated_profile(metrics); passed=selected_id is not None
+        selected_profile=market_profile(market,asset_type,selected_id) if selected_id else MARKET_PROFILES[(market,asset_type)];selected[(market,asset_type)]=selected_profile["profileId"]
+        evidence[asset_type]={"selectedProfileId":selected_profile["profileId"],"passed":passed,"selectionOrder":["POSITIVE_EXPECTANCY","LOWEST_DRAWDOWN","LOWEST_FALSE_BREAKOUT_10D","HIGHEST_PROFIT_FACTOR","HIGHEST_SHARPE"],"candidates":metrics}
+        _progress("CALIBRATION_COMPLETE",market=market,assetType=asset_type,selectedProfileId=selected_profile["profileId"],passed=passed)
+    return selected,evidence
 
 
 def _average_traded_value(snapshot):
@@ -183,10 +215,14 @@ def _base_result(generated=None):
     return {"modelVersion":MODEL_VERSION,"baselineModelVersion":BASELINE_MODEL_VERSION,"configHash":CONFIG_HASH,"validationStatus":"PROVISIONAL_BACKTEST","survivorshipBias":True,"generatedAt":generated or datetime.now(timezone.utc).isoformat(),"executionPolicy":"signal-close_next-open_stop-first","evaluationWindow":"LOCKED_OOS_LAST_504_SESSIONS","markets":{}}
 
 
-def _market_result(market, snapshots, candidate_trades, baseline_trades, errors, seconds):
+def _market_result(market, snapshots, candidate_trades, baseline_trades, errors, seconds, selected_profiles=None, calibration=None):
     candidate_oos=[item for item in candidate_trades if item.get("sample")=="OOS"]; baseline_oos=[item for item in baseline_trades if item.get("sample")=="OOS"]
     metrics=_metrics(candidate_oos); baseline_metrics=_metrics(baseline_oos)
-    return {"metrics":metrics,"baselineMetrics":baseline_metrics,"comparison":_comparison(metrics,baseline_metrics),"allPeriodMetrics":_metrics(candidate_trades),"trades":candidate_trades,"baselineTrades":baseline_trades,"dataQuality":{"securities":len(snapshots),"historyErrors":len(errors)},"durationSeconds":round(seconds,1)}
+    asset_buckets={}
+    for asset in ("STOCK","ETF"):
+        current=[item for item in candidate_oos if item.get("assetType")==asset]; baseline=[item for item in baseline_oos if item.get("assetType")==asset]; profile=market_profile(market,asset,(selected_profiles or {}).get((market,asset)))
+        asset_buckets[asset]={"profileId":profile["profileId"],"configHash":profile["configHash"],"strategyFamily":profile["strategyFamily"],"gatePreset":profile["gatePreset"],"calibration":(calibration or {}).get(asset),"calibrationPassed":bool((calibration or {}).get(asset,{}).get("passed")),"metrics":_metrics(current),"baselineMetrics":_metrics(baseline),"comparison":_comparison(_metrics(current),_metrics(baseline))}
+    return {"metrics":metrics,"baselineMetrics":baseline_metrics,"comparison":_comparison(metrics,baseline_metrics),"assetBuckets":asset_buckets,"allPeriodMetrics":_metrics(candidate_trades),"trades":candidate_trades,"baselineTrades":baseline_trades,"dataQuality":{"securities":len(snapshots),"historyErrors":len(errors)},"durationSeconds":round(seconds,1)}
 
 
 def _finalize(result):
@@ -228,7 +264,7 @@ def _write_result(path,result):
 def main():
     load_local_env(); parser=argparse.ArgumentParser()
     parser.add_argument("--markets",default=",".join(MARKETS)); parser.add_argument("--stocks",type=int,default=30); parser.add_argument("--etfs",type=int,default=10); parser.add_argument("--workers",type=int,default=12); parser.add_argument("--evaluation-sessions",type=int,default=504)
-    parser.add_argument("--output",default="backtest-result-v2.1.json"); parser.add_argument("--aggregate-dir"); parser.add_argument("--no-upload",action="store_true")
+    parser.add_argument("--output",default="backtest-result-v2.2.json"); parser.add_argument("--aggregate-dir"); parser.add_argument("--no-upload",action="store_true")
     parser.add_argument("--endpoint",default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret",default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token",default=os.getenv("OAI_SITES_BYPASS_TOKEN","")); args=parser.parse_args()
     if args.aggregate_dir:
         paths=glob.glob(os.path.join(args.aggregate_dir,"**","market-*.json"),recursive=True); _progress("AGGREGATING",files=len(paths)); result=merge_shards(paths)
@@ -239,8 +275,8 @@ def main():
         try:
             for market in requested:
                 started=time.perf_counter(); snapshots,benchmark,errors=_load_market(client,cache,market,max(1,args.stocks),max(0,args.etfs),max(1,args.workers),args.endpoint,args.secret,args.sites_token,scan_id)
-                candidate_trades=walk_forward(snapshots,benchmark,market,True,max(1,args.evaluation_sessions)); baseline_trades=walk_forward(snapshots,benchmark,market,False,max(1,args.evaluation_sessions))
-                result["markets"][market]=_market_result(market,snapshots,candidate_trades,baseline_trades,errors,time.perf_counter()-started); _progress("MARKET_COMPLETE",market=market,seconds=result["markets"][market]["durationSeconds"],candidateTrades=len(candidate_trades),baselineTrades=len(baseline_trades))
+                selected_profiles,calibration=calibrate_market_profiles(snapshots,benchmark,market,max(1,args.evaluation_sessions));candidate_trades=walk_forward(snapshots,benchmark,market,True,max(1,args.evaluation_sessions),profile_overrides=selected_profiles); baseline_trades=walk_forward(snapshots,benchmark,market,False,max(1,args.evaluation_sessions))
+                result["markets"][market]=_market_result(market,snapshots,candidate_trades,baseline_trades,errors,time.perf_counter()-started,selected_profiles,calibration); _progress("MARKET_COMPLETE",market=market,seconds=result["markets"][market]["durationSeconds"],candidateTrades=len(candidate_trades),baselineTrades=len(baseline_trades))
             _finalize(result)
         finally:
             cache.close()

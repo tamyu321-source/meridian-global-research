@@ -1,12 +1,14 @@
 import { rankSnapshots } from "@/lib/algorithm";
 import { fetchSymbolSnapshot } from "@/lib/public-data";
 import { loadLatestScanRankings } from "@/lib/repository";
-import { jsonError } from "@/lib/server";
+import { defaultRiskPolicy, loadRiskPolicy } from "@/lib/risk-policy";
+import { apiUser, jsonError, runtimeEnv } from "@/lib/server";
 import { ACTIVE_MODEL_VERSION, CANDIDATE_MODEL_VERSION, MARKETS, isSupportedModelVersion, type AssetType, type MarketCode, type RiskPlanId } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request, context: { params: Promise<{ instrumentId: string }> }) {
+  const user=await apiUser(request);if(!user)return jsonError("Sign in required",401);
   const { instrumentId } = await context.params;
   const decoded = decodeURIComponent(instrumentId);
   const separator = decoded.indexOf(":");
@@ -20,7 +22,8 @@ export async function GET(request: Request, context: { params: Promise<{ instrum
   const modelVersion = url.searchParams.get("modelVersion") ?? ACTIVE_MODEL_VERSION;
   if (!isSupportedModelVersion(modelVersion)) return jsonError("Unsupported model version", 400);
   try {
-    const persisted = await loadLatestScanRankings([market], "ALL", riskPlan, modelVersion);
+    const db=runtimeEnv().DB,policy=db?await loadRiskPolicy(db,user.email,riskPlan):defaultRiskPolicy(riskPlan);
+    const persisted = await loadLatestScanRankings([market], "ALL", riskPlan, modelVersion,policy);
     const security = persisted?.rankings.find((item) => item.instrumentId === decoded);
     if (security) {
       try {

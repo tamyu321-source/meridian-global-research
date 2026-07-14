@@ -1,4 +1,6 @@
 import { MARKETS, isSupportedModelVersion, type AssetType, type MarketCode } from "./types";
+import { ARCHIVED_CANDIDATE_MODEL_VERSION, CANDIDATE_MODEL_VERSION } from "./types";
+import { defaultMarketProfileIdentity } from "./model-profiles";
 import type { Locale } from "./types";
 import { tx } from "./i18n";
 
@@ -8,7 +10,7 @@ export type AnalysisStatus = "QUEUED" | "DISPATCHED" | "RUNNING" | "COMPLETE" | 
 const ACTIVE = new Set<AnalysisStatus>(["QUEUED", "DISPATCHED", "RUNNING"]);
 const SUCCESS = new Set<AnalysisStatus>(["COMPLETE", "SKIPPED"]);
 
-export type AnalysisComponentRow = Record<string, unknown> & { id: string; model_version: string; market: MarketCode; asset_type: AssetType; status: AnalysisStatus; phase: AnalysisPhase };
+export type AnalysisComponentRow = Record<string, unknown> & { id: string; model_version: string; market: MarketCode; asset_type: AssetType; status: AnalysisStatus; phase: AnalysisPhase; market_profile_id?:string|null; market_profile_hash?:string|null };
 
 export type ProgressCounts = { total:number; processed:number; updated:number; failed:number };
 
@@ -33,7 +35,7 @@ export function expandAnalysisScope(market: string, assetType: string) {
 }
 
 export async function createAnalysisJob(db: D1Database, ownerEmail: string, trigger: "MANUAL" | "SCHEDULED", market: string, assetType: string, modelVersion: string) {
-  if (!isSupportedModelVersion(modelVersion)) throw new Error("UNSUPPORTED_MODEL_VERSION");
+  if (!isSupportedModelVersion(modelVersion) || modelVersion===ARCHIVED_CANDIDATE_MODEL_VERSION) throw new Error("UNSUPPORTED_MODEL_VERSION");
   const scope = expandAnalysisScope(market, assetType);
   const jobId = crypto.randomUUID();
   await db.prepare(`INSERT INTO analysis_jobs (id,user_email,trigger,market_scope,asset_scope,status,created_at,updated_at)
@@ -41,13 +43,15 @@ export async function createAnalysisJob(db: D1Database, ownerEmail: string, trig
   const components: AnalysisComponentRow[] = [];
   const createdIds = new Set<string>();
   for (const bucket of scope.buckets) {
-    const activeKey = `${modelVersion}:${bucket.market}:${bucket.assetType}`;
+    let profile=modelVersion===CANDIDATE_MODEL_VERSION?await defaultMarketProfileIdentity(bucket.market,bucket.assetType):null;
+    if(profile){const stored=await db.prepare("SELECT profile_id,config_hash FROM model_market_profiles WHERE model_version=? AND market=? AND asset_type=? ORDER BY CASE status WHEN 'SHADOW_VALIDATING' THEN 0 WHEN 'BACKTEST_PASSED' THEN 1 WHEN 'ACTIVE_SHADOW' THEN 2 WHEN 'CALIBRATING' THEN 3 ELSE 4 END,COALESCE(selected_at,updated_at) DESC LIMIT 1").bind(modelVersion,bucket.market,bucket.assetType).first<{profile_id:string;config_hash:string}>();if(stored)profile={...profile,profileId:stored.profile_id,configHash:stored.config_hash};}
+    const activeKey = `${modelVersion}:${bucket.market}:${bucket.assetType}:${profile?.profileId??"legacy"}`;
     let component = await db.prepare("SELECT * FROM analysis_components WHERE active_key=? LIMIT 1").bind(activeKey).first<AnalysisComponentRow>();
     if (!component) {
       const componentId = crypto.randomUUID();
       try {
-        await db.prepare(`INSERT INTO analysis_components (id,active_key,model_version,market,asset_type,status,phase,heartbeat_at,created_at,updated_at)
-          VALUES (?,?,?,?,?,'QUEUED','QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(componentId, activeKey, modelVersion, bucket.market, bucket.assetType).run();
+        await db.prepare(`INSERT INTO analysis_components (id,active_key,model_version,market,asset_type,status,phase,heartbeat_at,market_profile_id,market_profile_hash,created_at,updated_at)
+          VALUES (?,?,?,?,?,'QUEUED','QUEUED',CURRENT_TIMESTAMP,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(componentId, activeKey, modelVersion, bucket.market, bucket.assetType,profile?.profileId??null,profile?.configHash??null).run();
         component = await db.prepare("SELECT * FROM analysis_components WHERE id=?").bind(componentId).first<AnalysisComponentRow>();
         createdIds.add(componentId);
       } catch {
@@ -76,7 +80,7 @@ export async function failDispatch(db: D1Database, jobId: string, componentIds: 
 
 function componentView(row: AnalysisComponentRow) {
   return {
-    id: String(row.id), modelVersion: String(row.model_version), market: String(row.market), assetType: String(row.asset_type), status: String(row.status), phase: String(row.phase),
+    id: String(row.id), modelVersion: String(row.model_version), market: String(row.market), assetType: String(row.asset_type), marketProfileId:row.market_profile_id?String(row.market_profile_id):null,marketProfileHash:row.market_profile_hash?String(row.market_profile_hash):null,status: String(row.status), phase: String(row.phase),
     total: Number(row.total_count ?? 0), processed: Number(row.processed_count ?? 0), updated: Number(row.updated_count ?? 0), failed: Number(row.failed_count ?? 0),
     scanId: row.scan_id ? String(row.scan_id) : null, githubRunId: row.github_run_id ? String(row.github_run_id) : null, githubRunUrl: row.github_run_url ? String(row.github_run_url) : null,
     heartbeatAt: row.heartbeat_at ? String(row.heartbeat_at) : null, startedAt: row.started_at ? String(row.started_at) : null, completedAt: row.completed_at ? String(row.completed_at) : null,

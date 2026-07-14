@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 
-from bridge.backtest import _base_result, _slice, merge_shards, walk_forward
+from bridge.backtest import _base_result, _slice, calibrate_market_profiles, merge_shards, walk_forward
 from bridge.model_v21 import raw_factors
 from bridge.test_bridge import fixture
 
@@ -24,6 +24,14 @@ class BacktestShardTests(unittest.TestCase):
         baseline=walk_forward(copy.deepcopy(universe),copy.deepcopy(benchmark),"US",False,evaluation_sessions=8,progress_every=0)
         self.assertIsInstance(candidate,list); self.assertIsInstance(baseline,list)
         self.assertTrue(all(item["sample"]=="OOS" for item in candidate+baseline))
+
+    def test_calibration_keeps_all_nine_candidates_before_the_oos_split(self):
+        universe=[fixture(f"C{index}",.1+index*.01) for index in range(4)]
+        selected,evidence=calibrate_market_profiles(copy.deepcopy(universe),fixture("BENCH",.08),"US",evaluation_sessions=8,progress_every=0)
+        self.assertEqual(set(selected),{("US","STOCK"),("US","ETF")})
+        self.assertEqual(len(evidence["STOCK"]["candidates"]),9)
+        self.assertEqual(len(evidence["ETF"]["candidates"]),9)
+        self.assertIn(selected[("US","STOCK")],evidence["STOCK"]["candidates"])
 
     def test_market_shards_merge_without_losing_trade_evidence(self):
         with tempfile.TemporaryDirectory() as root:

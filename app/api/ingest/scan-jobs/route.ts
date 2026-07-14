@@ -35,6 +35,6 @@ export async function POST(request: Request) {
     const created = await createAnalysisJob(db, owner, "SCHEDULED", body.market ?? "ALL", body.assetType ?? "ALL", modelVersion);
     await db.prepare("INSERT INTO ingest_events (idempotency_key,provider,captured_at,object_key,record_count,status,created_at) VALUES (?,'github-schedule',?,?,?,'accepted',CURRENT_TIMESTAMP)")
       .bind(idempotencyKey, new Date().toISOString(), created.jobId, created.createdComponents.length).run();
-    return Response.json({ accepted: true, duplicate: false, jobId: created.jobId, components: created.createdComponents.map((item) => ({ id: item.id, modelVersion: item.model_version, market: item.market, assetType: item.asset_type })), job: await reconcileAnalysisJob(db, created.jobId) }, { status: 202 });
+    return Response.json({ accepted: true, duplicate: false, jobId: created.jobId, components: created.createdComponents.map((item) => ({ id: item.id, modelVersion: item.model_version, market: item.market, assetType: item.asset_type,marketProfileId:item.market_profile_id??null,marketProfileHash:item.market_profile_hash??null })), job: await reconcileAnalysisJob(db, created.jobId) }, { status: 202 });
   } catch (error) { return jsonError("Scheduled analysis job creation failed", 400, error); }
 }

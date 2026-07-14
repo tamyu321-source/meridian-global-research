@@ -54,7 +54,7 @@ test("full analysis binds the selected model through UI, API, workflow, and Pyth
   assert.match(route, /modelVersion: component\.model_version/);
   assert.match(workflow, /--model-version "\$\{\{ matrix\.component\.modelVersion \}\}"/);
   assert.match(bridge, /def _select_model\(model_version\):/);
-  assert.match(bridge, /MODEL_MODULE is model_v21/);
+  assert.match(bridge, /MODEL_MODULE is model_v22/);
 });
 
 test("paper BUY validates the same model and entry zone shown to the user", async () => {
@@ -64,5 +64,6 @@ test("paper BUY validates the same model and entry zone shown to the user", asyn
   ]);
   assert.match(app, /modelVersion:selectedRank\.modelVersion/);
   assert.match(orders, /WHERE out\.model_version=\? AND sig\.model_version=out\.model_version/);
-  assert.match(orders, /evaluateEntryZone\(price,parseJson\(activeSignal\.trade_plan_json,\{\}\)\)/);
+  assert.match(orders, /resolvedTradePlan=parseJson<TradePlan>\(activeSignal\.trade_plan_json,emptyTradePlan\)/);
+  assert.match(orders, /evaluateEntryZone\(price,resolvedTradePlan\)/);
 });
