@@ -56,3 +56,13 @@ test("full analysis binds the selected model through UI, API, workflow, and Pyth
   assert.match(bridge, /def _select_model\(model_version\):/);
   assert.match(bridge, /MODEL_MODULE is model_v21/);
 });
+
+test("paper BUY validates the same model and entry zone shown to the user", async () => {
+  const [app, orders] = await Promise.all([
+    readFile(new URL("../components/meridian-app.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/paper/orders/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(app, /modelVersion:selectedRank\.modelVersion/);
+  assert.match(orders, /WHERE out\.model_version=\? AND sig\.model_version=out\.model_version/);
+  assert.match(orders, /evaluateEntryZone\(price,parseJson\(activeSignal\.trade_plan_json,\{\}\)\)/);
+});

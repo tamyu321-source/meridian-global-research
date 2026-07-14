@@ -153,7 +153,7 @@ export function MeridianApp({ view, instrumentId }: { view: AppView; instrumentI
 
   async function paperBuy() {
     if (!selectedRank) return;
-    const response = await fetch("/api/paper/orders", { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ instrumentId:selectedRank.instrumentId, side:"BUY", quantity }) });
+    const response = await fetch("/api/paper/orders", { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ instrumentId:selectedRank.instrumentId, side:"BUY", quantity, modelVersion:selectedRank.modelVersion }) });
     const result = await response.json() as ApiErrorPayload;
     if (!response.ok) setError(apiErrorText(locale,result,"errorSetup")); else setError("");
   }

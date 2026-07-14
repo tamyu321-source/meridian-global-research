@@ -1,11 +1,12 @@
 import { fetchFxRate } from "@/lib/fx";
 import { deriveHoldingAdvice, type HoldingSignal } from "@/lib/holding-advice";
 import { estimateMarketCosts, marketRulesForClient, marketSessionState, qualifiesForMinimumLotException, validateMarketQuantity, validatePositionQuantity } from "@/lib/market-rules";
+import { evaluateEntryZone } from "@/lib/paper-entry";
 import { fetchSymbolSnapshot } from "@/lib/public-data";
 import { paperQuoteIsExecutable, paperQuoteNeedsRefresh } from "@/lib/quote-freshness";
 import { recordAudit } from "@/lib/repository";
 import { apiUser, runtimeEnv } from "@/lib/server";
-import { MODEL_VERSION, RISK_PLANS, type AssetType, type MarketCode, type RiskPlanId, type TradePlan } from "@/lib/types";
+import { MODEL_VERSION, RISK_PLANS, isSupportedModelVersion, type AssetType, type MarketCode, type RiskPlanId, type TradePlan } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -138,7 +139,7 @@ export async function POST(request:Request) {
   if (!user) return paperError("SIGN_IN_REQUIRED", 401);
   const db = runtimeEnv().DB;
   if (!db) return paperError("SERVICE_UNAVAILABLE", 503);
-  const payload = await request.json() as { instrumentId?:string; side?:"BUY"|"SELL"; quantity?:number; signalId?:string };
+  const payload = await request.json() as { instrumentId?:string; side?:"BUY"|"SELL"; quantity?:number; modelVersion?:string };
   const quantity = Number(payload.quantity ?? 0), side = payload.side;
   if (!payload.instrumentId || !side || !["BUY","SELL"].includes(side)) return paperError("INVALID_ORDER", 400);
   try {
@@ -154,15 +155,19 @@ export async function POST(request:Request) {
     if (!paperQuoteIsExecutable(String(quote.captured_at), String(quote.freshness))) return paperError("STALE_QUOTE", 409);
     const session = marketSessionState(market);
     const price = Number(quote.price), grossLocal = price * quantity;
+    let resolvedSignalId:string|null = null;
     if (side === "BUY") {
-      const activeSignal = await db.prepare(`SELECT sig.trade_plan_json FROM active_scan_outputs out
+      const requestedModelVersion = String(payload.modelVersion ?? MODEL_VERSION);
+      if (!isSupportedModelVersion(requestedModelVersion) || requestedModelVersion !== MODEL_VERSION) return paperError("INVALID_ORDER", 409, { modelVersion:requestedModelVersion });
+      const activeSignal = await db.prepare(`SELECT sig.id,sig.action,sig.trade_plan_json FROM active_scan_outputs out
         JOIN signals sig ON sig.scan_id=out.scan_id JOIN securities sec ON sec.instrument_id=sig.instrument_id
-        WHERE out.model_version=sig.model_version AND out.market=sec.market AND out.asset_type=sec.asset_type AND sig.instrument_id=? LIMIT 1`).bind(payload.instrumentId).first<{ trade_plan_json:string }>();
-      if (activeSignal) {
-        const plan = JSON.parse(activeSignal.trade_plan_json) as { entryLow?:number; entryHigh?:number };
-        const entryLow = Number(plan.entryLow ?? 0), entryHigh = Number(plan.entryHigh ?? 0);
-        if (entryLow > 0 && entryHigh > 0 && (price < entryLow || price > entryHigh)) return paperError("PRICE_OUTSIDE_ENTRY_ZONE", 409, { entryLow, entryHigh, price });
-      }
+        WHERE out.model_version=? AND sig.model_version=out.model_version AND out.market=sec.market AND out.asset_type=sec.asset_type AND sig.instrument_id=? LIMIT 1`)
+        .bind(requestedModelVersion,payload.instrumentId).first<{ id:string; action:string; trade_plan_json:string }>();
+      if (!activeSignal || activeSignal.action !== "BUY") return paperError("INVALID_ORDER", 409, { modelVersion:requestedModelVersion });
+      resolvedSignalId = activeSignal.id;
+      const zone = evaluateEntryZone(price,parseJson(activeSignal.trade_plan_json,{}));
+      if (!zone.configured) return paperError("INVALID_ORDER", 409, { modelVersion:requestedModelVersion });
+      if (!zone.inside) return paperError("PRICE_OUTSIDE_ENTRY_ZONE", 409, { entryLow:zone.entryLow, entryHigh:zone.entryHigh, price:zone.price });
     }
     const costs = estimateMarketCosts(market, assetType, side, grossLocal, quantity);
     const fx = await fetchFxRate(String(quote.currency), String(portfolio.base_currency));
@@ -195,7 +200,7 @@ export async function POST(request:Request) {
     const realizedPnlBase = side === "SELL" && existing ? ((price - Number(existing.average_cost)) * quantity - costs.total) * fx.rate : 0;
     const riskException = minimumLotException ? "MINIMUM_TRADABLE_LOT" : null;
     const statements:D1PreparedStatement[] = [db.prepare(`INSERT INTO paper_orders (id,portfolio_id,user_email,instrument_id,side,quantity,requested_price,filled_price,status,currency,gross_value,commission,taxes,fx_rate,net_cash_flow,realized_pnl_base,market_rule_version,market_session,risk_exception,signal_id,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(orderId,String(portfolio.id),user.email,payload.instrumentId,side,quantity,price,price,"FILLED",String(quote.currency),grossLocal,costs.commission,taxes,fx.rate,netCashFlowBase,realizedPnlBase,costs.ruleVersion,session.state,riskException,payload.signalId ?? null)];
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(orderId,String(portfolio.id),user.email,payload.instrumentId,side,quantity,price,price,"FILLED",String(quote.currency),grossLocal,costs.commission,taxes,fx.rate,netCashFlowBase,realizedPnlBase,costs.ruleVersion,session.state,riskException,resolvedSignalId)];
     const position = await db.prepare("SELECT * FROM paper_positions WHERE portfolio_id=? AND instrument_id=?").bind(String(portfolio.id),payload.instrumentId).first<DbRow>();
     if (side === "BUY") {
       const oldQty = Number(position?.quantity ?? 0), oldCost = Number(position?.average_cost ?? 0), newQty = oldQty + quantity;
@@ -209,7 +214,7 @@ export async function POST(request:Request) {
     }
     statements.push(db.prepare("UPDATE paper_portfolios SET cash=cash+?,high_watermark=MAX(high_watermark,?),updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(netCashFlowBase,state.equity,String(portfolio.id)));
     await db.batch(statements);
-    await recordAudit(user.email,"PAPER_ORDER_FILLED",orderId,{ instrumentId:payload.instrumentId,side,quantity,price,currency:quote.currency,grossLocal,costs,fx,netCashFlowBase,marketRuleVersion:costs.ruleVersion,session,riskException });
+    await recordAudit(user.email,"PAPER_ORDER_FILLED",orderId,{ instrumentId:payload.instrumentId,side,quantity,price,currency:quote.currency,grossLocal,costs,fx,netCashFlowBase,marketRuleVersion:costs.ruleVersion,session,riskException,signalId:resolvedSignalId,modelVersion:side === "BUY" ? String(payload.modelVersion ?? MODEL_VERSION) : null });
     return Response.json({ order:{ id:orderId,status:"FILLED",side,quantity,filledPrice:price,currency:quote.currency,grossLocal,costs,fxRate:fx.rate,baseCurrency:portfolio.base_currency,netCashFlowBase,realizedPnlBase,marketSession:session,riskException } },{ status:201 });
   } catch (error) { return paperError("PAPER_ORDER_FAILED", 500, {}, error); }
 }
