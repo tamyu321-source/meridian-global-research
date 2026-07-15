@@ -71,7 +71,7 @@ jobs:
           --markets "$MARKET"
           --stocks "$STOCKS"
           --etfs "$ETFS"
-          --workers 12
+          --workers 4
           --evaluation-sessions "$EVALUATION_SESSIONS"
           --output "market-$MARKET.json"
           --endpoint "$MERIDIAN_ENDPOINT"

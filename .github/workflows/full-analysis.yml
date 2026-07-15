@@ -107,7 +107,7 @@ jobs:
           --component-id "${{ matrix.component.id }}"
           --market-profile-id "${{ matrix.component.marketProfileId }}"
           --market-profile-hash "${{ matrix.component.marketProfileHash }}"
-          --workers 12
+          --workers 4
       - name: Report abnormal termination
         if: failure()
         env:

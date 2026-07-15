@@ -14,7 +14,9 @@ import http.cookiejar
 import json
 import math
 import os
+import random
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -78,6 +80,7 @@ MARKET = {
 }
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MeridianResearchBridge/2.0"
 BLOCKED = re.compile(r"leveraged|inverse|ultra(?:pro|short)?|bear\s*[23]x|bull\s*[23]x|\b[23]x\b|warrant|callable\s+(?:bull|bear)|牛熊|權證|权证", re.I)
+YAHOO_RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
 def load_local_env():
@@ -92,8 +95,40 @@ def load_local_env():
 
 
 class YahooClient:
-    def __init__(self):
-        self.local = __import__("threading").local()
+    def __init__(self, min_interval=.25):
+        self.local = threading.local()
+        self.min_interval = max(0.0, float(min_interval))
+        self.rate_lock = threading.Lock()
+        self.session_lock = threading.Lock()
+        self.next_request_at = 0.0
+
+    def _wait_for_slot(self):
+        with self.rate_lock:
+            now = time.monotonic()
+            wait = max(0.0, self.next_request_at - now)
+            self.next_request_at = max(now, self.next_request_at) + self.min_interval + random.uniform(0, .04)
+        if wait:
+            time.sleep(wait)
+
+    def _defer(self, seconds):
+        with self.rate_lock:
+            self.next_request_at = max(self.next_request_at, time.monotonic() + max(0.0, float(seconds)))
+
+    @staticmethod
+    def _retryable(exc):
+        if isinstance(exc, urllib.error.HTTPError):
+            return exc.code in YAHOO_RETRYABLE_STATUSES
+        return isinstance(exc, (urllib.error.URLError, TimeoutError, json.JSONDecodeError))
+
+    @staticmethod
+    def _retry_delay(exc, attempt):
+        retry_after = exc.headers.get("Retry-After") if isinstance(exc, urllib.error.HTTPError) and exc.headers else None
+        try:
+            explicit = max(0.0, float(retry_after))
+        except (TypeError, ValueError):
+            explicit = 0.0
+        base = 2.0 if isinstance(exc, urllib.error.HTTPError) and exc.code == 429 else .75
+        return min(30.0, max(explicit, base * (2 ** attempt)) + random.uniform(0, .35))
 
     def opener(self):
         if not hasattr(self.local, "opener"):
@@ -102,27 +137,52 @@ class YahooClient:
             self.local.crumb = ""
         return self.local.opener
 
-    def request(self, url, data=None, timeout=35, attempts=4):
+    def request(self, url, data=None, timeout=35, attempts=6):
         headers = {"User-Agent":USER_AGENT,"Accept":"application/json"}
         if data is not None: headers["Content-Type"] = "application/json"
-        for attempt in range(attempts):
+        for attempt in range(max(1, attempts)):
             try:
+                self._wait_for_slot()
                 req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
                 with self.opener().open(req, timeout=timeout) as response:
                     return json.loads(response.read().decode("utf-8-sig"))
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-                if attempt + 1 >= attempts: raise
-                time.sleep(min(10, .7 * (2 ** attempt)))
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                if attempt + 1 >= max(1, attempts) or not self._retryable(exc):
+                    raise
+                delay = self._retry_delay(exc, attempt)
+                if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+                    self._defer(delay)
+                else:
+                    time.sleep(delay)
 
     def session(self):
         self.opener()
         if self.local.crumb: return self.local.crumb
-        try:
-            self.local.opener.open(urllib.request.Request("https://fc.yahoo.com", headers={"User-Agent":USER_AGENT}), timeout=15).close()
-        except urllib.error.HTTPError: pass
-        with self.local.opener.open(urllib.request.Request("https://query1.finance.yahoo.com/v1/test/getcrumb", headers={"User-Agent":USER_AGENT}), timeout=20) as response:
-            self.local.crumb = response.read().decode().strip()
-        return self.local.crumb
+        # Yahoo associates the crumb with a cookie. Serialize session creation
+        # so worker threads do not stampede the public session endpoints.
+        with self.session_lock:
+            if self.local.crumb: return self.local.crumb
+            for attempt in range(6):
+                try:
+                    self._wait_for_slot()
+                    try:
+                        self.local.opener.open(urllib.request.Request("https://fc.yahoo.com", headers={"User-Agent":USER_AGENT}), timeout=15).close()
+                    except urllib.error.HTTPError as exc:
+                        if exc.code not in (400, 404): raise
+                    self._wait_for_slot()
+                    with self.local.opener.open(urllib.request.Request("https://query1.finance.yahoo.com/v1/test/getcrumb", headers={"User-Agent":USER_AGENT}), timeout=20) as response:
+                        crumb = response.read().decode().strip()
+                    if not crumb or "<" in crumb: raise ValueError("invalid Yahoo crumb")
+                    self.local.crumb = crumb
+                    return crumb
+                except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError) as exc:
+                    if attempt + 1 >= 6 or not (isinstance(exc, ValueError) or self._retryable(exc)): raise
+                    delay = self._retry_delay(exc, attempt)
+                    if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+                        self._defer(delay)
+                    else:
+                        time.sleep(delay)
+        raise RuntimeError("Yahoo session unavailable")
 
     def screener_page(self, market, quote_type, size=250, offset=0, market_cap=True):
         cfg = MARKET[market]
@@ -134,11 +194,11 @@ class YahooClient:
         result = (((payload.get("finance") or {}).get("result") or [{}])[0])
         return result.get("quotes") or [], int(result.get("total") or 0)
 
-    def chart(self, symbol, period1=None):
+    def chart(self, symbol, period1=None, attempts=6):
         params = {"interval":"1d","events":"div,splits","includeAdjustedClose":"true"}
         if period1: params.update({"period1":str(period1),"period2":str(int(time.time()) + 86400)})
         else: params["range"] = "5y"
-        return self.request("https://query1.finance.yahoo.com/v8/finance/chart/" + urllib.parse.quote(symbol) + "?" + urllib.parse.urlencode(params))
+        return self.request("https://query1.finance.yahoo.com/v8/finance/chart/" + urllib.parse.quote(symbol) + "?" + urllib.parse.urlencode(params), attempts=attempts)
 
     def quote_summary(self, symbol):
         modules = "assetProfile,fundProfile,topHoldings,summaryDetail,defaultKeyStatistics"
@@ -230,7 +290,7 @@ def fetch_benchmark_snapshot(client, market):
 
 def collect_history(client, cache, market, candidates, scan_id, workers=6, progress=None):
     snapshots, errors, failed_candidates = [], [], []
-    def load(candidate):
+    def load(candidate, attempts=6):
         instrument_id = f"{market}:{candidate['symbol']}"; latest = cache.latest_timestamp(instrument_id)
         period1 = max(0, latest - 86400 * 7) if latest else None
         prior = cache.load_history(instrument_id) if latest else []
@@ -238,7 +298,7 @@ def collect_history(client, cache, market, candidates, scan_id, workers=6, progr
             asset_type = candidate["quoteType"]; symbol = candidate["symbol"]
             return {"instrumentId":instrument_id,"symbol":symbol,"name":candidate.get("shortName") or candidate.get("longName") or symbol,"market":market,"exchange":candidate.get("fullExchangeName") or MARKET[market]["exchange"],"currency":candidate.get("currency") or MARKET[market]["currency"],"assetType":asset_type,"sector":candidate.get("sector") or candidate.get("industry") or "Unclassified","source":"DuckDB cached Yahoo adjusted OHLCV","sourceCount":1,"freshness":"delayed","capturedAt":datetime.fromtimestamp(latest,timezone.utc).isoformat(),"bars":prior,"price":prior[-1]["close"],"previousClose":prior[-2]["close"],"sourceWarnings":[warning],"sourceConflicts":[],"corporateActionAnomalies":[],"etfStructure":{"score":50,"missingNonCritical":asset_type == "ETF","excluded":False},"_cacheOnly":True}
         try:
-            payload = client.chart(candidate["symbol"], period1)
+            payload = client.chart(candidate["symbol"], period1, attempts=attempts)
             cache.save_raw(market, candidate["symbol"], payload, scan_id)
             fresh = _snapshot(market, candidate, payload)
         except Exception:
@@ -261,12 +321,16 @@ def collect_history(client, cache, market, candidates, scan_id, workers=6, progr
                 failed_candidates.append(candidate)
             completed += 1
             if progress and (completed % 25 == 0 or completed == len(candidates)): progress(completed, len(candidates), len(snapshots), 0)
-    # A calm second pass recovers transient provider throttles without weakening coverage.
+    # A calm sequential pass recovers transient provider throttles without
+    # repeating the original burst. The global cooldown also pauses threads
+    # that may still be waiting for a Yahoo slot.
     recovered = set()
+    if failed_candidates:
+        client._defer(5.0)
     for candidate in failed_candidates:
         try:
-            time.sleep(.12)
-            item = load(candidate); snapshots.append(item); recovered.add(candidate["symbol"])
+            time.sleep(.08 + random.uniform(0, .08))
+            item = load(candidate, attempts=3); snapshots.append(item); recovered.add(candidate["symbol"])
         except Exception:
             pass
     if recovered:
@@ -380,6 +444,7 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
     stock_target = stock_target if "STOCK" in asset_types else 0; etf_target = etf_target if "ETF" in asset_types else 0
     reporter = ProgressReporter(endpoint, secret, sites_token, job_id, component_id)
     client, cache = YahooClient(), MarketCache(); all_snapshots, errors, coverage, parquet = [], [], {}, {}
+    requested_profile = None
     total_target = len(markets) * (stock_target + etf_target)
     try:
         reporter.report("RUNNING", "DISCOVERY", total_target, 0, 0, 0, scan_id)
@@ -405,7 +470,11 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
             discovered_count = discovered_stocks + discovered_etfs; analyzed = len(snapshots); ratio = analyzed / discovered_count * 100 if discovered_count else 0
             coverage[market] = {"stocksDiscovered":discovered_stocks,"etfsDiscovered":discovered_etfs,"targetStocks":stock_target,"targetEtfs":etf_target,"rawStocksDiscovered":raw_stocks,"rawEtfsDiscovered":raw_etfs,"stocksAnalyzed":len(stocks),"etfsAnalyzed":len(etfs),"historyRejected":len(candidates)-len(eligible),"failed":len(market_errors),"candidateCount":len(candidates),"coveragePct":round(ratio,2),"qualityGatePassed":discovered_count > 0 and ratio >= CONFIG["completionCoveragePct"],"universeSource":MARKET[market]["universe"],"seconds":round(time.time()-market_started,1)}
             market_latest=max((item["bars"][-1]["timestamp"] for item in snapshots),default=0);coverage[market]["tradingSessionDate"]=datetime.fromtimestamp(market_latest,timezone.utc).date().isoformat() if market_latest else None;coverage[market]["freshnessPct"]=round(sum(item["bars"][-1]["timestamp"]==market_latest for item in snapshots)/len(snapshots)*100,2) if snapshots else 0
-            for current_asset in asset_types: parquet[(market,current_asset)] = cache.export_market_parquet(market, scan_id, current_asset)
+            for current_asset in asset_types:
+                parquet[(market,current_asset)] = {
+                    "path": cache.export_market_parquet(market, scan_id, current_asset),
+                    "records": sum(item["assetType"] == current_asset for item in snapshots),
+                }
             print(json.dumps({"market":market,"coverage":coverage[market]}, ensure_ascii=False), flush=True)
         reporter.report("RUNNING", "ENRICHMENT", total_target, total_target, len(all_snapshots), len(errors), scan_id)
         enrich_candidate_profiles(client, cache, all_snapshots)
@@ -422,8 +491,8 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
                     market_contexts[market] = build_market_context(market_pool, None, raw_by_id)
                     errors.append({"market":market,"symbol":BENCHMARK_SYMBOLS[market],"stage":"regime","error":type(exc).__name__})
             if MODEL_MODULE is model_v22 and market_profile_id and len(markets)==1 and len(asset_types)==1:
-                profile=model_v22.market_profile(markets[0],asset_types[0],market_profile_id)
-                if market_profile_hash and profile["configHash"]!=market_profile_hash: raise ValueError("Market profile hash mismatch")
+                requested_profile=model_v22.market_profile(markets[0],asset_types[0],market_profile_id)
+                if market_profile_hash and requested_profile["configHash"]!=market_profile_hash: raise ValueError("Market profile hash mismatch")
                 rankings = rank_snapshots(all_snapshots, allow_buy=True, market_contexts=market_contexts, raw_by_id=raw_by_id,profile_overrides={(markets[0],asset_types[0]):market_profile_id})
             else: rankings = rank_snapshots(all_snapshots, allow_buy=True, market_contexts=market_contexts, raw_by_id=raw_by_id)
         else:
@@ -434,12 +503,19 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
         status = "complete" if complete else "partial"
         provider = "Public exchange directories + Yahoo Finance adjusted OHLCV + benchmark breadth"
         profile_ids=sorted(set(item.get("marketProfileId") for item in rankings if item.get("marketProfileId"))); profile_hashes=sorted(set(item.get("marketProfileHash") for item in rankings if item.get("marketProfileHash")))
+        scan_profile_id = requested_profile["profileId"] if requested_profile else profile_ids[0] if len(profile_ids)==1 else None
+        scan_profile_hash = requested_profile["configHash"] if requested_profile else profile_hashes[0] if len(profile_hashes)==1 else None
         latest_session_timestamp=max((item["bars"][-1]["timestamp"] for item in all_snapshots),default=0);trading_session_date=datetime.fromtimestamp(latest_session_timestamp,timezone.utc).date().isoformat() if latest_session_timestamp else None
         freshness_pct=round(sum(item["bars"][-1]["timestamp"]==latest_session_timestamp for item in all_snapshots)/len(all_snapshots)*100,2) if all_snapshots else 0
-        scan = {"id":scan_id,"provider":provider,"modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"marketProfileId":profile_ids[0] if len(profile_ids)==1 else None,"marketProfileHash":profile_hashes[0] if len(profile_hashes)==1 else None,"validationStatus":"SHADOW","status":status,"startedAt":started.isoformat(),"completedAt":completed.isoformat(),"requestedMarkets":markets,"requestedAssetTypes":list(asset_types),"jobId":job_id or None,"componentId":component_id or None,"targetStocksPerMarket":stock_target,"targetEtfsPerMarket":etf_target,"discoveredCount":sum(v["stocksDiscovered"]+v["etfsDiscovered"] for v in coverage.values()),"analyzedCount":len(rankings),"failedCount":len(errors),"fallbackCount":0,"coverage":coverage,"marketContexts":market_contexts,"sourceConflicts":source_conflicts,"corporateActionAnomalies":action_anomalies,"qualityGatePassed":complete,"universeSnapshotDate":today,"tradingSessionDate":trading_session_date,"dataFreshnessPct":freshness_pct,"recomputationConsistencyPct":100}
+        scan = {"id":scan_id,"provider":provider,"modelVersion":MODEL_VERSION,"configHash":CONFIG_HASH,"marketProfileId":scan_profile_id,"marketProfileHash":scan_profile_hash,"validationStatus":"SHADOW","status":status,"startedAt":started.isoformat(),"completedAt":completed.isoformat(),"requestedMarkets":markets,"requestedAssetTypes":list(asset_types),"jobId":job_id or None,"componentId":component_id or None,"targetStocksPerMarket":stock_target,"targetEtfsPerMarket":etf_target,"discoveredCount":sum(v["stocksDiscovered"]+v["etfsDiscovered"] for v in coverage.values()),"analyzedCount":len(rankings),"failedCount":len(errors),"fallbackCount":0,"coverage":coverage,"marketContexts":market_contexts,"sourceConflicts":source_conflicts,"corporateActionAnomalies":action_anomalies,"qualityGatePassed":complete,"universeSnapshotDate":today,"tradingSessionDate":trading_session_date,"dataFreshnessPct":freshness_pct,"recomputationConsistencyPct":100}
         reporter.report("RUNNING", "UPLOADING", total_target, total_target, len(rankings), len(errors), scan_id)
-        for (market,current_asset), path in parquet.items():
-            upload_artifact(endpoint, secret, sites_token, path, f"history/{MODEL_VERSION}/{scan_id}/{market}/{current_asset}.parquet", market, current_asset, scan_id)
+        # Never replace the last recoverable history artifact with an empty or
+        # quality-gate-failing snapshot. The partial scan summary is still
+        # uploaded below for audit and component failure reporting.
+        if complete:
+            for (market,current_asset), artifact in parquet.items():
+                if artifact["records"]:
+                    upload_artifact(endpoint, secret, sites_token, artifact["path"], f"history/{MODEL_VERSION}/{scan_id}/{market}/{current_asset}.parquet", market, current_asset, scan_id)
         batches = upload_rankings(endpoint, secret, sites_token, scan, rankings, job_id, component_id)
         result = {"scanId":scan_id,"status":status,"analyzed":len(rankings),"buyCount":sum(x["action"] == "BUY" for x in rankings),"failed":len(errors),"batches":batches,"seconds":round((completed-started).total_seconds(),1),"coverage":coverage}
         reporter.report("COMPLETE" if complete else "FAILED", "COMPLETE" if complete else "UPLOADING", total_target, total_target, len(rankings), len(errors), scan_id, None if complete else "QUALITY_GATE_FAILED", None if complete else "Coverage or corporate-action quality gate failed")
@@ -453,7 +529,7 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
 
 def main():
     load_local_env(); parser = argparse.ArgumentParser(description="Meridian version-selected public market bridge")
-    parser.add_argument("--endpoint", default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret", default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token", default=os.getenv("OAI_SITES_BYPASS_TOKEN", "")); parser.add_argument("--markets", default=",".join(MARKETS)); parser.add_argument("--asset-types", default="STOCK,ETF"); parser.add_argument("--model-version", default=os.getenv("MERIDIAN_MODEL_VERSION", model_v22.MODEL_VERSION)); parser.add_argument("--job-id", default=os.getenv("MERIDIAN_JOB_ID", "")); parser.add_argument("--component-id", default=os.getenv("MERIDIAN_COMPONENT_ID", "")); parser.add_argument("--market-profile-id",default=os.getenv("MERIDIAN_MARKET_PROFILE_ID","")); parser.add_argument("--market-profile-hash",default=os.getenv("MERIDIAN_MARKET_PROFILE_HASH","")); parser.add_argument("--stocks", type=int, default=int(os.getenv("MERIDIAN_STOCKS_PER_MARKET", "500"))); parser.add_argument("--etfs", type=int, default=int(os.getenv("MERIDIAN_ETFS_PER_MARKET", "100"))); parser.add_argument("--workers", type=int, default=int(os.getenv("MERIDIAN_HISTORY_WORKERS", "12"))); parser.add_argument("--loop", action="store_true"); args = parser.parse_args()
+    parser.add_argument("--endpoint", default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret", default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token", default=os.getenv("OAI_SITES_BYPASS_TOKEN", "")); parser.add_argument("--markets", default=",".join(MARKETS)); parser.add_argument("--asset-types", default="STOCK,ETF"); parser.add_argument("--model-version", default=os.getenv("MERIDIAN_MODEL_VERSION", model_v22.MODEL_VERSION)); parser.add_argument("--job-id", default=os.getenv("MERIDIAN_JOB_ID", "")); parser.add_argument("--component-id", default=os.getenv("MERIDIAN_COMPONENT_ID", "")); parser.add_argument("--market-profile-id",default=os.getenv("MERIDIAN_MARKET_PROFILE_ID","")); parser.add_argument("--market-profile-hash",default=os.getenv("MERIDIAN_MARKET_PROFILE_HASH","")); parser.add_argument("--stocks", type=int, default=int(os.getenv("MERIDIAN_STOCKS_PER_MARKET", "500"))); parser.add_argument("--etfs", type=int, default=int(os.getenv("MERIDIAN_ETFS_PER_MARKET", "100"))); parser.add_argument("--workers", type=int, default=int(os.getenv("MERIDIAN_HISTORY_WORKERS", "4"))); parser.add_argument("--loop", action="store_true"); args = parser.parse_args()
     if not args.endpoint or not args.secret: parser.error("--endpoint and --secret are required")
     try: _select_model(args.model_version)
     except ValueError as exc: parser.error(str(exc))

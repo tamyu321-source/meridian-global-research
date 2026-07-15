@@ -6,6 +6,7 @@
   "historyYears": 5,
   "minimumTradingDays": 252,
   "completionCoveragePct": 95,
+  "sourceConflictPct": 1,
   "shadowCompletenessPct": 98,
   "stockBuyLimitPerMarket": 3,
   "etfBuyLimitPerMarket": 1,

@@ -263,7 +263,7 @@ def _write_result(path,result):
 
 def main():
     load_local_env(); parser=argparse.ArgumentParser()
-    parser.add_argument("--markets",default=",".join(MARKETS)); parser.add_argument("--stocks",type=int,default=30); parser.add_argument("--etfs",type=int,default=10); parser.add_argument("--workers",type=int,default=12); parser.add_argument("--evaluation-sessions",type=int,default=504)
+    parser.add_argument("--markets",default=",".join(MARKETS)); parser.add_argument("--stocks",type=int,default=30); parser.add_argument("--etfs",type=int,default=10); parser.add_argument("--workers",type=int,default=4); parser.add_argument("--evaluation-sessions",type=int,default=504)
     parser.add_argument("--output",default="backtest-result-v2.2.json"); parser.add_argument("--aggregate-dir"); parser.add_argument("--no-upload",action="store_true")
     parser.add_argument("--endpoint",default=os.getenv("MERIDIAN_ENDPOINT")); parser.add_argument("--secret",default=os.getenv("INGEST_HMAC_SECRET")); parser.add_argument("--sites-token",default=os.getenv("OAI_SITES_BYPASS_TOKEN","")); args=parser.parse_args()
     if args.aggregate_dir:

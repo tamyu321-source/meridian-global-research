@@ -22,6 +22,24 @@ def fixture(symbol, slope=.2, asset_type="STOCK", sector="Technology", volume_mu
 
 
 class BridgeUnitTests(unittest.TestCase):
+    def test_yahoo_request_retries_a_rate_limited_response(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self): return b'{"ok":true}'
+
+        class FlakyOpener:
+            def __init__(self): self.calls=0
+            def open(self, *_args, **_kwargs):
+                self.calls+=1
+                if self.calls==1: raise urllib.error.HTTPError("https://query1.finance.yahoo.com",429,"rate limited",{"Retry-After":"0"},None)
+                return Response()
+
+        client=bridge.YahooClient(min_interval=0); opener=FlakyOpener(); client.local.opener=opener; client.local.crumb=""
+        with patch.object(client,"_wait_for_slot"), patch.object(client,"_retry_delay",return_value=0), patch.object(client,"_defer") as defer:
+            self.assertEqual(client.request("https://query1.finance.yahoo.com/test",attempts=2),{"ok":True})
+        self.assertEqual(opener.calls,2); defer.assert_called_once_with(0)
+
     def test_bridge_selects_the_requested_canonical_model(self):
         try:
             selected=bridge._select_model(MODEL_VERSION)
@@ -30,6 +48,13 @@ class BridgeUnitTests(unittest.TestCase):
             self.assertEqual(bridge.model_identity()["modelVersion"],MODEL_VERSION)
             with self.assertRaisesRegex(ValueError,"Unsupported model version"):
                 bridge._select_model("meridian-swing-v9.9.9")
+        finally:
+            bridge._select_model(CANDIDATE_MODEL_VERSION)
+
+    def test_v22_keeps_the_source_conflict_quality_threshold(self):
+        try:
+            bridge._select_model(CANDIDATE_MODEL_VERSION)
+            self.assertEqual(bridge.CONFIG["sourceConflictPct"],1)
         finally:
             bridge._select_model(CANDIDATE_MODEL_VERSION)
 
@@ -98,6 +123,33 @@ class BridgeUnitTests(unittest.TestCase):
                 self.assertEqual(len(restored.load_history("US:PARQUET")),300)
             finally:
                 source.close(); restored.close()
+
+    def test_failed_profile_scan_keeps_identity_and_does_not_publish_empty_artifact(self):
+        class EmptyCache:
+            root="fixture"
+            def store_universe(self,*_): pass
+            def store_histories(self,*_): pass
+            def export_market_parquet(self,market,scan_id,asset_type): return f"{market}-{asset_type}.parquet"
+            def close(self): pass
+
+        profile=bridge.model_v22.market_profile("SG","ETF","v2.2-SG-ETF-defensive_pullback-core")
+        with patch.object(bridge,"MarketCache",return_value=EmptyCache()), \
+             patch.object(bridge,"restore_history_artifact",return_value=0), \
+             patch.object(bridge,"discover_universe",return_value=[]), \
+             patch.object(bridge,"enrich_candidate_profiles",side_effect=lambda _client,_cache,rows:rows), \
+             patch.object(bridge,"fetch_benchmark_snapshot",side_effect=RuntimeError("provider unavailable")), \
+             patch.object(bridge,"build_market_context",return_value={"regime":"BLOCKED_DATA"}), \
+             patch.object(bridge,"rank_snapshots",return_value=[]), \
+             patch.object(bridge.ProgressReporter,"report",return_value={"accepted":True}), \
+             patch.object(bridge,"upload_artifact") as artifact, \
+             patch.object(bridge,"upload_rankings",return_value=1) as rankings:
+            result=bridge.run_full_scan(["SG"],500,100,"https://example.test","secret",workers=1,asset_types=["ETF"],job_id="job",component_id="component",market_profile_id=profile["profileId"],market_profile_hash=profile["configHash"])
+        scan=rankings.call_args.args[3]
+        self.assertEqual(result["status"],"partial")
+        self.assertEqual(scan["marketProfileId"],profile["profileId"])
+        self.assertEqual(scan["marketProfileHash"],profile["configHash"])
+        self.assertFalse(scan["qualityGatePassed"])
+        artifact.assert_not_called()
 
 
 if __name__ == "__main__": unittest.main()
