@@ -58,6 +58,25 @@ class BridgeUnitTests(unittest.TestCase):
         finally:
             bridge._select_model(CANDIDATE_MODEL_VERSION)
 
+    def test_coverage_excludes_only_explicit_short_history_rejections(self):
+        candidates=[{"symbol":f"ETF{index}.SI","quoteType":"ETF"} for index in range(44)]
+        snapshots=[{"assetType":"ETF"} for _ in range(38)]
+        short=[{"assetType":"ETF","code":"INSUFFICIENT_HISTORY"} for _ in range(6)]
+        summary=bridge.coverage_summary(candidates,snapshots,short,0,100)
+        self.assertEqual(summary["rawEtfsDiscovered"],44)
+        self.assertEqual(summary["etfsDiscovered"],38)
+        self.assertEqual(summary["historyRejected"],6)
+        self.assertEqual(summary["failed"],0)
+        self.assertEqual(summary["coveragePct"],100)
+        self.assertTrue(summary["qualityGatePassed"])
+
+        provider_failures=short[:4]+[{"assetType":"ETF","code":"HISTORY_FETCH_FAILED"} for _ in range(2)]
+        incomplete=bridge.coverage_summary(candidates,snapshots[:36],provider_failures,0,100)
+        self.assertEqual(incomplete["etfsDiscovered"],40)
+        self.assertEqual(incomplete["failed"],2)
+        self.assertEqual(incomplete["coveragePct"],90)
+        self.assertFalse(incomplete["qualityGatePassed"])
+
     def test_progress_reporter_never_decreases_durable_counts(self):
         reporter=ProgressReporter("https://example.test","secret","token","job","component")
         with patch("bridge.meridian_bridge._signed_json", return_value={"accepted":True}) as send:

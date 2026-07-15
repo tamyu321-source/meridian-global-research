@@ -83,6 +83,10 @@ BLOCKED = re.compile(r"leveraged|inverse|ultra(?:pro|short)?|bear\s*[23]x|bull\s
 YAHOO_RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
+class InsufficientHistoryError(ValueError):
+    """The instrument is valid but cannot enter the 252-session universe."""
+
+
 def load_local_env():
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
     if not os.path.exists(path): return
@@ -289,7 +293,10 @@ def fetch_benchmark_snapshot(client, market):
 
 
 def collect_history(client, cache, market, candidates, scan_id, workers=6, progress=None):
-    snapshots, errors, failed_candidates = [], [], []
+    snapshots, errors_by_symbol, failed_candidates = [], {}, []
+    def history_error(candidate, exc):
+        insufficient = isinstance(exc, InsufficientHistoryError)
+        return {"market":market,"symbol":candidate["symbol"],"assetType":candidate["quoteType"],"stage":"history","error":type(exc).__name__,"code":"INSUFFICIENT_HISTORY" if insufficient else "HISTORY_FETCH_FAILED"}
     def load(candidate, attempts=6):
         instrument_id = f"{market}:{candidate['symbol']}"; latest = cache.latest_timestamp(instrument_id)
         period1 = max(0, latest - 86400 * 7) if latest else None
@@ -307,7 +314,7 @@ def collect_history(client, cache, market, candidates, scan_id, workers=6, progr
         if latest and fresh["bars"] is not prior:
             by_stamp = {bar["timestamp"]:bar for bar in prior}
             by_stamp.update({bar["timestamp"]:bar for bar in fresh["bars"]}); fresh["bars"] = [by_stamp[key] for key in sorted(by_stamp)]
-        if len(fresh["bars"]) < CONFIG["minimumTradingDays"]: raise ValueError("insufficient history")
+        if len(fresh["bars"]) < CONFIG["minimumTradingDays"]: raise InsufficientHistoryError("insufficient history")
         return fresh
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = {pool.submit(load, candidate):candidate for candidate in candidates}
@@ -317,10 +324,10 @@ def collect_history(client, cache, market, candidates, scan_id, workers=6, progr
             try:
                 item = future.result(); snapshots.append(item)
             except Exception as exc:
-                errors.append({"market":market,"symbol":candidate["symbol"],"stage":"history","error":type(exc).__name__})
+                errors_by_symbol[candidate["symbol"]] = history_error(candidate, exc)
                 failed_candidates.append(candidate)
             completed += 1
-            if progress and (completed % 25 == 0 or completed == len(candidates)): progress(completed, len(candidates), len(snapshots), 0)
+            if progress and (completed % 25 == 0 or completed == len(candidates)): progress(completed, len(candidates), len(snapshots), len(errors_by_symbol))
     # A calm sequential pass recovers transient provider throttles without
     # repeating the original burst. The global cooldown also pauses threads
     # that may still be waiting for a Yahoo slot.
@@ -331,11 +338,28 @@ def collect_history(client, cache, market, candidates, scan_id, workers=6, progr
         try:
             time.sleep(.08 + random.uniform(0, .08))
             item = load(candidate, attempts=3); snapshots.append(item); recovered.add(candidate["symbol"])
-        except Exception:
-            pass
-    if recovered:
-        errors = [item for item in errors if item.get("symbol") not in recovered]
-    return snapshots, errors
+        except Exception as exc:
+            # Preserve the final calm-pass reason. A first-pass 429 followed by
+            # a valid short history is an eligibility rejection, not a provider
+            # outage; the reverse remains a real coverage failure.
+            errors_by_symbol[candidate["symbol"]] = history_error(candidate, exc)
+    for symbol in recovered:
+        errors_by_symbol.pop(symbol, None)
+    return snapshots, list(errors_by_symbol.values())
+
+
+def coverage_summary(candidates, snapshots, history_errors, stock_target, etf_target):
+    raw = {asset:sum(item["quoteType"] == asset for item in candidates) for asset in ("STOCK","ETF")}
+    rejected = {asset:sum(item.get("assetType") == asset and item.get("code") == "INSUFFICIENT_HISTORY" for item in history_errors) for asset in ("STOCK","ETF")}
+    discovered = {
+        "STOCK":min(stock_target, max(0, raw["STOCK"] - rejected["STOCK"])),
+        "ETF":min(etf_target, max(0, raw["ETF"] - rejected["ETF"])),
+    }
+    analyzed = {asset:sum(item["assetType"] == asset for item in snapshots) for asset in ("STOCK","ETF")}
+    discovered_count = discovered["STOCK"] + discovered["ETF"]
+    ratio = len(snapshots) / discovered_count * 100 if discovered_count else 0
+    provider_failures = sum(item.get("code") != "INSUFFICIENT_HISTORY" for item in history_errors)
+    return {"stocksDiscovered":discovered["STOCK"],"etfsDiscovered":discovered["ETF"],"rawStocksDiscovered":raw["STOCK"],"rawEtfsDiscovered":raw["ETF"],"stocksAnalyzed":analyzed["STOCK"],"etfsAnalyzed":analyzed["ETF"],"historyRejected":rejected["STOCK"]+rejected["ETF"],"failed":provider_failures,"candidateCount":len(candidates),"coveragePct":round(ratio,2),"qualityGatePassed":discovered_count > 0 and ratio >= CONFIG["completionCoveragePct"]}
 
 
 def _raw_value(value, default=0):
@@ -465,10 +489,8 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
             snapshots = stocks + etfs
             cache.store_histories([item for item in eligible if not item.get("_cacheOnly")])
             all_snapshots.extend(snapshots); errors.extend(market_errors)
-            raw_stocks = sum(x["quoteType"] == "STOCK" for x in candidates); raw_etfs = sum(x["quoteType"] == "ETF" for x in candidates)
-            discovered_stocks = min(stock_target, raw_stocks); discovered_etfs = min(etf_target, raw_etfs)
-            discovered_count = discovered_stocks + discovered_etfs; analyzed = len(snapshots); ratio = analyzed / discovered_count * 100 if discovered_count else 0
-            coverage[market] = {"stocksDiscovered":discovered_stocks,"etfsDiscovered":discovered_etfs,"targetStocks":stock_target,"targetEtfs":etf_target,"rawStocksDiscovered":raw_stocks,"rawEtfsDiscovered":raw_etfs,"stocksAnalyzed":len(stocks),"etfsAnalyzed":len(etfs),"historyRejected":len(candidates)-len(eligible),"failed":len(market_errors),"candidateCount":len(candidates),"coveragePct":round(ratio,2),"qualityGatePassed":discovered_count > 0 and ratio >= CONFIG["completionCoveragePct"],"universeSource":MARKET[market]["universe"],"seconds":round(time.time()-market_started,1)}
+            coverage[market] = coverage_summary(candidates, snapshots, market_errors, stock_target, etf_target)
+            coverage[market].update({"targetStocks":stock_target,"targetEtfs":etf_target,"universeSource":MARKET[market]["universe"],"seconds":round(time.time()-market_started,1)})
             market_latest=max((item["bars"][-1]["timestamp"] for item in snapshots),default=0);coverage[market]["tradingSessionDate"]=datetime.fromtimestamp(market_latest,timezone.utc).date().isoformat() if market_latest else None;coverage[market]["freshnessPct"]=round(sum(item["bars"][-1]["timestamp"]==market_latest for item in snapshots)/len(snapshots)*100,2) if snapshots else 0
             for current_asset in asset_types:
                 parquet[(market,current_asset)] = {
