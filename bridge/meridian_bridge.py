@@ -327,7 +327,10 @@ def collect_history(client, cache, market, candidates, scan_id, workers=6, progr
                 errors_by_symbol[candidate["symbol"]] = history_error(candidate, exc)
                 failed_candidates.append(candidate)
             completed += 1
-            if progress and (completed % 25 == 0 or completed == len(candidates)): progress(completed, len(candidates), len(snapshots), len(errors_by_symbol))
+            # Do not persist provisional first-pass failures. The calm retry
+            # below determines whether a symbol is truly unavailable, merely
+            # too new for the model, or fully recovered.
+            if progress and (completed % 25 == 0 or completed == len(candidates)): progress(completed, len(candidates), len(snapshots), 0)
     # A calm sequential pass recovers transient provider throttles without
     # repeating the original burst. The global cooldown also pauses threads
     # that may still be waiting for a Yahoo slot.
@@ -345,7 +348,10 @@ def collect_history(client, cache, market, candidates, scan_id, workers=6, progr
             errors_by_symbol[candidate["symbol"]] = history_error(candidate, exc)
     for symbol in recovered:
         errors_by_symbol.pop(symbol, None)
-    return snapshots, list(errors_by_symbol.values())
+    final_errors = list(errors_by_symbol.values())
+    if progress:
+        progress(len(candidates), len(candidates), len(snapshots), sum(item.get("code") != "INSUFFICIENT_HISTORY" for item in final_errors))
+    return snapshots, final_errors
 
 
 def coverage_summary(candidates, snapshots, history_errors, stock_target, etf_target):
@@ -488,7 +494,11 @@ def run_full_scan(markets, stock_target, etf_target, endpoint, secret, sites_tok
             stocks, etfs = eligible_stocks[:desired_stocks], eligible_etfs[:desired_etfs]
             snapshots = stocks + etfs
             cache.store_histories([item for item in eligible if not item.get("_cacheOnly")])
-            all_snapshots.extend(snapshots); errors.extend(market_errors)
+            all_snapshots.extend(snapshots)
+            # Short histories are auditable universe exclusions, not failed
+            # downloads. Keep them in coverage.historyRejected without
+            # polluting scan failedCount or the durable job failure counter.
+            errors.extend(item for item in market_errors if item.get("code") != "INSUFFICIENT_HISTORY")
             coverage[market] = coverage_summary(candidates, snapshots, market_errors, stock_target, etf_target)
             coverage[market].update({"targetStocks":stock_target,"targetEtfs":etf_target,"universeSource":MARKET[market]["universe"],"seconds":round(time.time()-market_started,1)})
             market_latest=max((item["bars"][-1]["timestamp"] for item in snapshots),default=0);coverage[market]["tradingSessionDate"]=datetime.fromtimestamp(market_latest,timezone.utc).date().isoformat() if market_latest else None;coverage[market]["freshnessPct"]=round(sum(item["bars"][-1]["timestamp"]==market_latest for item in snapshots)/len(snapshots)*100,2) if snapshots else 0
